@@ -17,6 +17,7 @@
     "src/config.ts",
     "src/world.ts",
     "src/actions.ts",
+    "src/camera.ts",
     "src/client.ts"
   ]
 }

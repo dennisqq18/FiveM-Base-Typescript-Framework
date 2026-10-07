@@ -49,3 +49,18 @@ declare function SetPedConfigFlag(ped: number, flagId: number, value: boolean): 
 declare function DisableControlAction(padIndex: number, control: number, disable: boolean): void;
 declare function setTick(handler: () => void): number;
 declare function clearTick(tickId: number): void;
+
+declare function GetSelectedPedWeapon(ped: number): number;
+declare function SetCurrentPedWeapon(ped: number, weaponHash: number, equipNow: boolean): void;
+declare function IsPauseMenuActive(): boolean;
+declare function GetGameplayCamCoord(): [number, number, number];
+declare function GetGameplayCamRot(rotationOrder: number): [number, number, number];
+declare function GetFinalRenderedCamFov(): number;
+declare function GetFrameTime(): number;
+declare function CreateCamWithParams(camName: string, posX: number, posY: number, posZ: number, rotX: number, rotY: number, rotZ: number, fov: number, active: boolean, rotationOrder: number): number;
+declare function DoesCamExist(cam: number): boolean;
+declare function SetCamCoord(cam: number, posX: number, posY: number, posZ: number): void;
+declare function SetCamRot(cam: number, rotX: number, rotY: number, rotZ: number, rotationOrder: number): void;
+declare function SetCamFov(cam: number, fieldOfView: number): void;
+declare function RenderScriptCams(render: boolean, ease: boolean, easeTime: number, p3: boolean, p4: boolean): void;
+declare function DestroyCam(cam: number, thisScriptCheck: boolean): void;

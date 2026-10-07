@@ -31,7 +31,7 @@ var RumbleShared;
 })(RumbleShared || (RumbleShared = {}));
 const Config = Object.freeze({
     frameworkName: 'Rumble',
-    version: '0.10.6',
+    version: '0.10.7',
     defaultCash: 500,
     defaultCard: 5000,
     maxCharacters: 5,

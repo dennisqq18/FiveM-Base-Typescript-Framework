@@ -16,6 +16,17 @@ const GameplayConfig = Object.freeze({
       taskName: 'task_mp_pointing'
     })
   }),
+  cameraZoom: Object.freeze({
+    enabled: true,
+    zoomInCommand: 'rumble_camera_zoom_in',
+    zoomOutCommand: 'rumble_camera_zoom_out',
+    zoomInDescription: 'Zoom camera in while unarmed',
+    zoomOutDescription: 'Zoom camera out while unarmed',
+    maxLevel: 4,
+    fovStep: 8.0,
+    minimumFov: 22.0,
+    interpolationSpeed: 13.0
+  }),
   world: Object.freeze({
     disableWantedSystem: true,
     disableAmbientPolice: true,
