@@ -58,15 +58,15 @@ function refreshNuiFocus() {
     SetNuiFocus(registrationOpen || selectorOpen || spawnOpen, registrationOpen || selectorOpen || spawnOpen);
 }
 function openRegistration(profile = {}) {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e;
     registrationProfile = { ...profile };
     registrationOpen = true;
     selectorOpen = false;
     spawnOpen = false;
     loaded = false;
-    DoScreenFadeOut(0);
     ShutdownLoadingScreen();
     ShutdownLoadingScreenNui();
+    DoScreenFadeIn(0);
     const ped = PlayerPedId();
     if (DoesEntityExist(ped)) {
         FreezeEntityPosition(ped, true);
@@ -82,6 +82,7 @@ function openRegistration(profile = {}) {
         characterId: Number((_b = profile === null || profile === void 0 ? void 0 : profile.characterId) !== null && _b !== void 0 ? _b : 0),
         firstName: String((_c = profile === null || profile === void 0 ? void 0 : profile.firstName) !== null && _c !== void 0 ? _c : ''),
         lastName: String((_d = profile === null || profile === void 0 ? void 0 : profile.lastName) !== null && _d !== void 0 ? _d : ''),
+        minimumAge: Number((_e = profile === null || profile === void 0 ? void 0 : profile.minimumAge) !== null && _e !== void 0 ? _e : 18),
     }));
 }
 function closeRegistration() {
@@ -94,9 +95,9 @@ function openSelector(data) {
     spawnOpen = false;
     selectorOpen = true;
     loaded = false;
-    DoScreenFadeOut(0);
     ShutdownLoadingScreen();
     ShutdownLoadingScreenNui();
+    DoScreenFadeIn(0);
     const ped = PlayerPedId();
     if (DoesEntityExist(ped)) {
         FreezeEntityPosition(ped, true);
@@ -117,6 +118,9 @@ function openSpawn(data) {
     selectorOpen = false;
     spawnOpen = true;
     loaded = false;
+    ShutdownLoadingScreen();
+    ShutdownLoadingScreenNui();
+    DoScreenFadeIn(0);
     refreshNuiFocus();
     SendNuiMessage(JSON.stringify({ type: 'registration', active: false }));
     SendNuiMessage(JSON.stringify({ type: 'selector', active: false }));
@@ -279,6 +283,7 @@ on('__cfx_nui:spawnSelect', (data, callback) => {
     }
     callback({ accepted: true });
     void spawnCharacter(playerData, position, id).catch((error) => {
+        DoScreenFadeIn(250);
         console.error('[rumble] Spawn failed', error);
         chat('Spawn failed. Check the F8 console.', 'error');
     });

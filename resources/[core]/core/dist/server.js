@@ -31,11 +31,12 @@ var RumbleShared;
 })(RumbleShared || (RumbleShared = {}));
 const Config = Object.freeze({
     frameworkName: 'Rumble',
-    version: '0.8.7',
+    version: '0.8.8',
     defaultCash: Math.max(0, GetConvarInt('rumble_default_cash', 500)),
     defaultCard: Math.max(0, GetConvarInt('rumble_default_card', 5000)),
     maxMoney: Math.max(100000, GetConvarInt('rumble_max_money', 2000000000)),
     maxCharacters: Math.max(1, GetConvarInt('rumble_max_characters', 5)),
+    minimumCharacterAge: Math.max(18, GetConvarInt('rumble_min_character_age', 18)),
     autosaveIntervalMs: Math.max(10000, GetConvarInt('rumble_autosave_interval_ms', 30000)),
     needsIntervalMs: Math.max(10000, GetConvarInt('rumble_needs_interval_ms', 60000)),
     hungerDecay: Math.max(0, GetConvarInt('rumble_hunger_decay', 1)),
@@ -127,6 +128,18 @@ function validateDateOfBirth(value) {
     const now = new Date();
     const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
     return parsed.getTime() <= today;
+}
+function isAtLeastAge(value, minimumAge) {
+    if (!validateDateOfBirth(value))
+        return false;
+    const [year, month, day] = value.split('-').map(Number);
+    const now = new Date();
+    let age = now.getUTCFullYear() - year;
+    const currentMonth = now.getUTCMonth() + 1;
+    const currentDay = now.getUTCDate();
+    if (currentMonth < month || (currentMonth === month && currentDay < day))
+        age--;
+    return age >= minimumAge;
 }
 function validPlayerSource(value) {
     const source = Number(value);
@@ -369,6 +382,13 @@ class InventoryRepository {
     }
     async insert(characterId, slot, itemName, amount, metadata) {
         return await dbInsert('INSERT INTO rumble_inventory (character_id, slot, item_name, amount, metadata) VALUES (?, ?, ?, ?, ?)', [characterId, slot, itemName, amount, metadata]);
+    }
+    async insertMany(characterId, items) {
+        if (items.length === 0)
+            return;
+        const placeholders = items.map(() => '(?, ?, ?, ?, ?)').join(', ');
+        const params = items.flatMap((item) => [characterId, item.slot, item.itemName, item.amount, item.metadata]);
+        await dbQuery(`INSERT INTO rumble_inventory (character_id, slot, item_name, amount, metadata) VALUES ${placeholders}`, params);
     }
     async updateAmount(characterId, id, amount) {
         await dbUpdate('UPDATE rumble_inventory SET amount = ? WHERE id = ? AND character_id = ?', [amount, id, characterId]);
@@ -626,15 +646,11 @@ async function loadInventory(characterId) {
     }));
 }
 async function seedStarterItems(characterId) {
-    if (await inventoryRepository.hasAny(characterId))
-        return;
-    const starter = [
-        [1, 'water', 2],
-        [2, 'sandwich', 2],
-        [3, 'medkit', 1],
-    ];
-    for (const [slot, name, amount] of starter)
-        await inventoryRepository.insert(characterId, slot, name, amount, '{}');
+    await inventoryRepository.insertMany(characterId, [
+        { slot: 1, itemName: 'water', amount: 2, metadata: '{}' },
+        { slot: 2, itemName: 'sandwich', amount: 2, metadata: '{}' },
+        { slot: 3, itemName: 'medkit', amount: 1, metadata: '{}' },
+    ]);
 }
 async function initializeDatabase() {
     for (let attempt = 1; attempt <= 30; attempt++) {
@@ -923,12 +939,14 @@ async function createCharacter(identifier, firstName, lastName, dateOfBirth) {
         }
     }
     await seedStarterItems(insertedId);
-    if (defaultCash > 0) {
-        await moneyRepository.record(insertedId, 'cash', defaultCash, defaultCash, 'character:create', 'system');
-    }
-    if (defaultCard > 0) {
-        await moneyRepository.record(insertedId, 'card', defaultCard, defaultCard, 'character:create', 'system');
-    }
+    await Promise.all([
+        defaultCash > 0
+            ? moneyRepository.record(insertedId, 'cash', defaultCash, defaultCash, 'character:create', 'system')
+            : Promise.resolve(),
+        defaultCard > 0
+            ? moneyRepository.record(insertedId, 'card', defaultCard, defaultCard, 'character:create', 'system')
+            : Promise.resolve(),
+    ]);
     const row = await characterRepository.getByIdOnly(insertedId);
     if (!row)
         throw new Error('The character was created but could not be loaded.');
@@ -1001,6 +1019,7 @@ async function selectCharacter(source, identifier, character) {
         spawns: Object.values(SPAWNS),
     });
     emit('rumble:server:characterLoaded', source, publicPlayer(session));
+    Logger.info('PLAYER', 'Character selected', { source, characterId: character.id, citizenId: character.citizenId });
     void logAction('character', 'selected', source, source, { characterId: character.id, citizenId: character.citizenId });
 }
 async function loadPlayer(source) {
@@ -1022,10 +1041,11 @@ async function loadPlayer(source) {
             message(source, 'No valid FiveM/license identifier was found.', 'error');
             return;
         }
+        Logger.info('PLAYER', 'Player connected to framework', { source, name: GetPlayerName(source) ?? `Player ${source}`, identifier });
         await upsertPlayer(source, identifier);
         const characters = await listCharacters(identifier);
         if (characters.length === 0) {
-            emitNet('rumble:character:registrationRequired', source, { mode: 'create', firstName: '', lastName: '' });
+            emitNet('rumble:character:registrationRequired', source, { mode: 'create', firstName: '', lastName: '', minimumAge: Config.minimumCharacterAge });
             return;
         }
         const incomplete = characters.find((character) => !character.dateOfBirth);
@@ -1035,6 +1055,7 @@ async function loadPlayer(source) {
                 characterId: incomplete.id,
                 firstName: incomplete.firstName,
                 lastName: incomplete.lastName,
+                minimumAge: Config.minimumCharacterAge,
             });
             return;
         }
@@ -1513,6 +1534,10 @@ onNet('rumble:character:createInitial', (payload) => {
             emitNet('rumble:character:registrationError', source, 'The date of birth is invalid.');
             return;
         }
+        if (!isAtLeastAge(dateOfBirth, Config.minimumCharacterAge)) {
+            emitNet('rumble:character:registrationError', source, `You must be at least ${Config.minimumCharacterAge} years old.`);
+            return;
+        }
         await upsertPlayer(source, identifier);
         if (mode === 'complete') {
             const characterId = Number(payload?.characterId ?? 0);
@@ -1561,6 +1586,7 @@ onNet('rumble:character:select', (characterId) => {
                 characterId: character.id,
                 firstName: character.firstName,
                 lastName: character.lastName,
+                minimumAge: Config.minimumCharacterAge,
             });
             return;
         }
@@ -1948,6 +1974,9 @@ RegisterCommand('newchar', (source, args) => {
     const dateOfBirth = String(args[2] ?? '').trim();
     if (!validateCharacterName(firstName) || !validateCharacterName(lastName) || !validateDateOfBirth(dateOfBirth)) {
         return message(source, 'Usage: /newchar FirstName LastName YYYY-MM-DD.', 'error');
+    }
+    if (!isAtLeastAge(dateOfBirth, Config.minimumCharacterAge)) {
+        return message(source, `You must be at least ${Config.minimumCharacterAge} years old.`, 'error');
     }
     void (async () => {
         await saveSession(session, true);

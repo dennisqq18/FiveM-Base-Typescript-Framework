@@ -27,7 +27,12 @@ function Registration({ active, serverError, profile }) {
   const [dateOfBirth, setDateOfBirth] = useState('');
   const [localError, setLocalError] = useState('');
   const [submitting, setSubmitting] = useState(false);
-  const maxDate = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const minimumAge = Math.max(18, Number(profile?.minimumAge || 18));
+  const maxDate = useMemo(() => {
+    const now = new Date();
+    const cutoff = new Date(Date.UTC(now.getUTCFullYear() - minimumAge, now.getUTCMonth(), now.getUTCDate()));
+    return cutoff.toISOString().slice(0, 10);
+  }, [minimumAge]);
 
   useEffect(() => {
     if (serverError) {
@@ -65,8 +70,13 @@ function Registration({ active, serverError, profile }) {
       return;
     }
 
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth) || dateOfBirth > maxDate || dateOfBirth < '1900-01-01') {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth) || dateOfBirth < '1900-01-01') {
       setLocalError('Enter a valid date of birth.');
+      return;
+    }
+
+    if (dateOfBirth > maxDate) {
+      setLocalError(`You must be at least ${minimumAge} years old.`);
       return;
     }
 
@@ -273,7 +283,7 @@ function FlyPanel({ active, speed }) {
 function App() {
   const [registrationActive, setRegistrationActive] = useState(false);
   const [registrationError, setRegistrationError] = useState('');
-  const [registrationProfile, setRegistrationProfile] = useState({ mode: 'create', characterId: 0, firstName: '', lastName: '' });
+  const [registrationProfile, setRegistrationProfile] = useState({ mode: 'create', characterId: 0, firstName: '', lastName: '', minimumAge: 18 });
   const [selectorActive, setSelectorActive] = useState(false);
   const [selectorData, setSelectorData] = useState({ characters: [], maxCharacters: 1 });
   const [selectorError, setSelectorError] = useState('');
@@ -295,7 +305,8 @@ function App() {
             mode: String(data.mode || 'create'),
             characterId: Number(data.characterId || 0),
             firstName: String(data.firstName || ''),
-            lastName: String(data.lastName || '')
+            lastName: String(data.lastName || ''),
+            minimumAge: Math.max(18, Number(data.minimumAge || 18))
           });
         }
       }

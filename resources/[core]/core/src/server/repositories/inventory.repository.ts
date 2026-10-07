@@ -17,6 +17,16 @@ class InventoryRepository {
     );
   }
 
+  async insertMany(characterId: number, items: Array<{ slot: number; itemName: string; amount: number; metadata: string }>): Promise<void> {
+    if (items.length === 0) return;
+    const placeholders = items.map(() => '(?, ?, ?, ?, ?)').join(', ');
+    const params = items.flatMap((item) => [characterId, item.slot, item.itemName, item.amount, item.metadata]);
+    await dbQuery(
+      `INSERT INTO rumble_inventory (character_id, slot, item_name, amount, metadata) VALUES ${placeholders}`,
+      params,
+    );
+  }
+
   async updateAmount(characterId: number, id: number, amount: number): Promise<void> {
     await dbUpdate('UPDATE rumble_inventory SET amount = ? WHERE id = ? AND character_id = ?', [amount, id, characterId]);
   }

@@ -3,7 +3,7 @@ game 'gta5'
 
 author 'Rumble Framework'
 description 'Rumble - standalone TypeScript framework foundation for FiveM'
-version '0.8.7'
+version '0.8.8'
 
 node_version '22'
 

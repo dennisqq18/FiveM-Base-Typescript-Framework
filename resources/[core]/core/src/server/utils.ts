@@ -79,6 +79,17 @@ function validateDateOfBirth(value: string): boolean {
   return parsed.getTime() <= today;
 }
 
+function isAtLeastAge(value: string, minimumAge: number): boolean {
+  if (!validateDateOfBirth(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const now = new Date();
+  let age = now.getUTCFullYear() - year;
+  const currentMonth = now.getUTCMonth() + 1;
+  const currentDay = now.getUTCDate();
+  if (currentMonth < month || (currentMonth === month && currentDay < day)) age--;
+  return age >= minimumAge;
+}
+
 function validPlayerSource(value: any): value is number {
   const source = Number(value);
   return Number.isInteger(source) && source > 0 && Boolean(GetPlayerName(source));

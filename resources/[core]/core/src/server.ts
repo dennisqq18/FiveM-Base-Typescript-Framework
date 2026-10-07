@@ -277,13 +277,11 @@ async function loadInventory(characterId: number): Promise<InventorySlot[]> {
 }
 
 async function seedStarterItems(characterId: number): Promise<void> {
-  if (await inventoryRepository.hasAny(characterId)) return;
-  const starter: Array<[number, string, number]> = [
-    [1, 'water', 2],
-    [2, 'sandwich', 2],
-    [3, 'medkit', 1],
-  ];
-  for (const [slot, name, amount] of starter) await inventoryRepository.insert(characterId, slot, name, amount, '{}');
+  await inventoryRepository.insertMany(characterId, [
+    { slot: 1, itemName: 'water', amount: 2, metadata: '{}' },
+    { slot: 2, itemName: 'sandwich', amount: 2, metadata: '{}' },
+    { slot: 3, itemName: 'medkit', amount: 1, metadata: '{}' },
+  ]);
 }
 
 async function initializeDatabase(): Promise<void> {
@@ -601,12 +599,14 @@ async function createCharacter(
   }
 
   await seedStarterItems(insertedId);
-  if (defaultCash > 0) {
-    await moneyRepository.record(insertedId, 'cash', defaultCash, defaultCash, 'character:create', 'system');
-  }
-  if (defaultCard > 0) {
-    await moneyRepository.record(insertedId, 'card', defaultCard, defaultCard, 'character:create', 'system');
-  }
+  await Promise.all([
+    defaultCash > 0
+      ? moneyRepository.record(insertedId, 'cash', defaultCash, defaultCash, 'character:create', 'system')
+      : Promise.resolve(),
+    defaultCard > 0
+      ? moneyRepository.record(insertedId, 'card', defaultCard, defaultCard, 'character:create', 'system')
+      : Promise.resolve(),
+  ]);
   const row = await characterRepository.getByIdOnly(insertedId);
   if (!row) throw new Error('The character was created but could not be loaded.');
   return toCharacter(row);
@@ -682,6 +682,7 @@ async function selectCharacter(source: number, identifier: string, character: Ch
     spawns: Object.values(SPAWNS),
   });
   emit('rumble:server:characterLoaded', source, publicPlayer(session));
+  Logger.info('PLAYER', 'Character selected', { source, characterId: character.id, citizenId: character.citizenId });
   void logAction('character', 'selected', source, source, { characterId: character.id, citizenId: character.citizenId });
 }
 
@@ -706,11 +707,12 @@ async function loadPlayer(source: number): Promise<void> {
       return;
     }
 
+    Logger.info('PLAYER', 'Player connected to framework', { source, name: GetPlayerName(source) ?? `Player ${source}`, identifier });
     await upsertPlayer(source, identifier);
 
     const characters = await listCharacters(identifier);
     if (characters.length === 0) {
-      emitNet('rumble:character:registrationRequired', source, { mode: 'create', firstName: '', lastName: '' });
+      emitNet('rumble:character:registrationRequired', source, { mode: 'create', firstName: '', lastName: '', minimumAge: Config.minimumCharacterAge });
       return;
     }
 
@@ -721,6 +723,7 @@ async function loadPlayer(source: number): Promise<void> {
         characterId: incomplete.id,
         firstName: incomplete.firstName,
         lastName: incomplete.lastName,
+        minimumAge: Config.minimumCharacterAge,
       });
       return;
     }
@@ -1223,6 +1226,11 @@ onNet('rumble:character:createInitial', (payload: any) => {
       return;
     }
 
+    if (!isAtLeastAge(dateOfBirth, Config.minimumCharacterAge)) {
+      emitNet('rumble:character:registrationError', source, `You must be at least ${Config.minimumCharacterAge} years old.`);
+      return;
+    }
+
     await upsertPlayer(source, identifier);
 
     if (mode === 'complete') {
@@ -1270,6 +1278,7 @@ onNet('rumble:character:select', (characterId: number) => {
         characterId: character.id,
         firstName: character.firstName,
         lastName: character.lastName,
+        minimumAge: Config.minimumCharacterAge,
       });
       return;
     }
@@ -1663,6 +1672,9 @@ RegisterCommand('newchar', (source, args) => {
   const dateOfBirth = String(args[2] ?? '').trim();
   if (!validateCharacterName(firstName) || !validateCharacterName(lastName) || !validateDateOfBirth(dateOfBirth)) {
     return message(source, 'Usage: /newchar FirstName LastName YYYY-MM-DD.', 'error');
+  }
+  if (!isAtLeastAge(dateOfBirth, Config.minimumCharacterAge)) {
+    return message(source, `You must be at least ${Config.minimumCharacterAge} years old.`, 'error');
   }
 
   void (async () => {

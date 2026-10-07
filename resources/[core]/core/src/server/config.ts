@@ -1,10 +1,11 @@
 const Config = Object.freeze({
   frameworkName: 'Rumble',
-  version: '0.8.7',
+  version: '0.8.8',
   defaultCash: Math.max(0, GetConvarInt('rumble_default_cash', 500)),
   defaultCard: Math.max(0, GetConvarInt('rumble_default_card', 5000)),
   maxMoney: Math.max(100000, GetConvarInt('rumble_max_money', 2000000000)),
   maxCharacters: Math.max(1, GetConvarInt('rumble_max_characters', 5)),
+  minimumCharacterAge: Math.max(18, GetConvarInt('rumble_min_character_age', 18)),
   autosaveIntervalMs: Math.max(10000, GetConvarInt('rumble_autosave_interval_ms', 30000)),
   needsIntervalMs: Math.max(10000, GetConvarInt('rumble_needs_interval_ms', 60000)),
   hungerDecay: Math.max(0, GetConvarInt('rumble_hunger_decay', 1)),

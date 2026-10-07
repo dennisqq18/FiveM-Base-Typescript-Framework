@@ -30,14 +30,15 @@ body {
   justify-content: center;
   padding: 32px;
   pointer-events: auto;
-  background: radial-gradient(circle at 18% 20%, rgba(117, 87, 255, 0.20), transparent 34%), radial-gradient(circle at 84% 78%, rgba(48, 184, 255, 0.12), transparent 30%), rgba(5, 7, 11, 0.96);
+  background: transparent;
 }
 
 .panel {
   border: 1px solid rgba(255, 255, 255, 0.09);
   border-radius: 18px;
-  background: rgba(16, 19, 26, 0.97);
-  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.48);
+  background: rgba(16, 19, 26, 0.92);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.36);
+  backdrop-filter: blur(10px);
 }
 
 .registration-card {

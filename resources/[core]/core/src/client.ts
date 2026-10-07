@@ -68,9 +68,9 @@ function openRegistration(profile: any = {}): void {
   selectorOpen = false;
   spawnOpen = false;
   loaded = false;
-  DoScreenFadeOut(0);
   ShutdownLoadingScreen();
   ShutdownLoadingScreenNui();
+  DoScreenFadeIn(0);
 
   const ped = PlayerPedId();
   if (DoesEntityExist(ped)) {
@@ -88,6 +88,7 @@ function openRegistration(profile: any = {}): void {
     characterId: Number(profile?.characterId ?? 0),
     firstName: String(profile?.firstName ?? ''),
     lastName: String(profile?.lastName ?? ''),
+    minimumAge: Number(profile?.minimumAge ?? 18),
   }));
 }
 
@@ -102,9 +103,9 @@ function openSelector(data: any): void {
   spawnOpen = false;
   selectorOpen = true;
   loaded = false;
-  DoScreenFadeOut(0);
   ShutdownLoadingScreen();
   ShutdownLoadingScreenNui();
+  DoScreenFadeIn(0);
   const ped = PlayerPedId();
   if (DoesEntityExist(ped)) {
     FreezeEntityPosition(ped, true);
@@ -127,6 +128,9 @@ function openSpawn(data: any): void {
   selectorOpen = false;
   spawnOpen = true;
   loaded = false;
+  ShutdownLoadingScreen();
+  ShutdownLoadingScreenNui();
+  DoScreenFadeIn(0);
   refreshNuiFocus();
   SendNuiMessage(JSON.stringify({ type: 'registration', active: false }));
   SendNuiMessage(JSON.stringify({ type: 'selector', active: false }));
@@ -315,6 +319,7 @@ on('__cfx_nui:spawnSelect', (data: any, callback: (response: any) => void) => {
   }
   callback({ accepted: true });
   void spawnCharacter(playerData, position, id).catch((error) => {
+    DoScreenFadeIn(250);
     console.error('[rumble] Spawn failed', error);
     chat('Spawn failed. Check the F8 console.', 'error');
   });
