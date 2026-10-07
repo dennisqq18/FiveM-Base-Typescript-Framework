@@ -54,7 +54,6 @@ let characterSceneToken = 0;
 
 let playerData: PlayerData | null = null;
 let loaded = false;
-let multiplayerPedInitialized = false;
 let registrationOpen = false;
 let selectorOpen = false;
 let spawnOpen = false;
@@ -301,9 +300,10 @@ function closeSpawn(): void {
   refreshNuiFocus();
 }
 
-async function ensureMultiplayerPlayerModel(): Promise<number> {
-  if (multiplayerPedInitialized) return await waitForPlayerPed();
+async function ensureMultiplayerPlayerModel(force = false): Promise<number> {
   const model = GetHashKey(ClientConfig.defaultPlayerModel);
+  const currentPed = await waitForPlayerPed();
+  if (!force && DoesEntityExist(currentPed) && GetEntityModel(currentPed) === model) return currentPed;
   if (!IsModelInCdimage(model)) throw new Error(`Invalid multiplayer model: ${ClientConfig.defaultPlayerModel}`);
 
   RequestModel(model);
@@ -314,11 +314,14 @@ async function ensureMultiplayerPlayerModel(): Promise<number> {
   }
 
   SetPlayerModel(PlayerId(), model);
-  SetModelAsNoLongerNeeded(model);
   const ped = await waitForPlayerPed();
+  if (!DoesEntityExist(ped) || GetEntityModel(ped) !== model) {
+    SetModelAsNoLongerNeeded(model);
+    throw new Error('The multiplayer player model could not be applied.');
+  }
   SetPedDefaultComponentVariation(ped);
   ClearAllPedProps(ped);
-  multiplayerPedInitialized = true;
+  SetModelAsNoLongerNeeded(model);
   return ped;
 }
 
@@ -487,7 +490,13 @@ onNet('rumble:character:selected', (data: any) => {
   inventoryState = Array.isArray(data?.inventory) ? data.inventory : [];
   deathState = String(data?.metadata?.deathState ?? 'alive') as any;
   if (!playerData) return;
-  openSpawn(data);
+
+  void ensureMultiplayerPlayerModel().then(() => {
+    openSpawn(data);
+  }).catch((error) => {
+    console.error('[RUMBLE][CLIENT][MODEL] Failed to prepare multiplayer ped', error);
+    chat('Could not prepare the multiplayer character. Check the F8 console.', 'error');
+  });
 });
 
 onNet('rumble:player:loaded', (data: PlayerData) => {
@@ -1026,6 +1035,11 @@ async function serverCallback<K extends RumbleCallbackName>(
 on('onClientResourceStart', (resourceName: string) => {
   if (resourceName !== GetCurrentResourceName()) return;
 
+  // Replace GTA's temporary single-player ped as soon as the framework client starts.
+  // The model is validated again during character spawn, so resource restarts/respawns cannot leave Michael behind.
+  void ensureMultiplayerPlayerModel(true).catch((error) => {
+    console.error('[RUMBLE][CLIENT][MODEL] Initial multiplayer ped setup failed', error);
+  });
 
   setTimeout(() => {
     emit('chat:addSuggestion', '/ara', 'Revive all players within 10m, including yourself.');

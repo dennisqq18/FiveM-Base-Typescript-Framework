@@ -103,7 +103,6 @@ let lastCharacterCinematicScene = -1;
 let characterSceneToken = 0;
 let playerData = null;
 let loaded = false;
-let multiplayerPedInitialized = false;
 let registrationOpen = false;
 let selectorOpen = false;
 let spawnOpen = false;
@@ -323,10 +322,11 @@ function closeSpawn() {
     SendNuiMessage(JSON.stringify({ type: 'spawn', active: false }));
     refreshNuiFocus();
 }
-async function ensureMultiplayerPlayerModel() {
-    if (multiplayerPedInitialized)
-        return await waitForPlayerPed();
+async function ensureMultiplayerPlayerModel(force = false) {
     const model = GetHashKey(ClientConfig.defaultPlayerModel);
+    const currentPed = await waitForPlayerPed();
+    if (!force && DoesEntityExist(currentPed) && GetEntityModel(currentPed) === model)
+        return currentPed;
     if (!IsModelInCdimage(model))
         throw new Error(`Invalid multiplayer model: ${ClientConfig.defaultPlayerModel}`);
     RequestModel(model);
@@ -337,11 +337,14 @@ async function ensureMultiplayerPlayerModel() {
         await clientDelay(25);
     }
     SetPlayerModel(PlayerId(), model);
-    SetModelAsNoLongerNeeded(model);
     const ped = await waitForPlayerPed();
+    if (!DoesEntityExist(ped) || GetEntityModel(ped) !== model) {
+        SetModelAsNoLongerNeeded(model);
+        throw new Error('The multiplayer player model could not be applied.');
+    }
     SetPedDefaultComponentVariation(ped);
     ClearAllPedProps(ped);
-    multiplayerPedInitialized = true;
+    SetModelAsNoLongerNeeded(model);
     return ped;
 }
 async function spawnCharacter(data, position, spawnId = 'last') {
@@ -495,7 +498,12 @@ onNet('rumble:character:selected', (data) => {
     deathState = String((_c = (_b = data === null || data === void 0 ? void 0 : data.metadata) === null || _b === void 0 ? void 0 : _b.deathState) !== null && _c !== void 0 ? _c : 'alive');
     if (!playerData)
         return;
-    openSpawn(data);
+    void ensureMultiplayerPlayerModel().then(() => {
+        openSpawn(data);
+    }).catch((error) => {
+        console.error('[RUMBLE][CLIENT][MODEL] Failed to prepare multiplayer ped', error);
+        chat('Could not prepare the multiplayer character. Check the F8 console.', 'error');
+    });
 });
 onNet('rumble:player:loaded', (data) => {
     playerData = data;
@@ -987,6 +995,9 @@ async function serverCallback(name, payload, timeoutMs = 10000) {
 on('onClientResourceStart', (resourceName) => {
     if (resourceName !== GetCurrentResourceName())
         return;
+    void ensureMultiplayerPlayerModel(true).catch((error) => {
+        console.error('[RUMBLE][CLIENT][MODEL] Initial multiplayer ped setup failed', error);
+    });
     setTimeout(() => {
         emit('chat:addSuggestion', '/ara', 'Revive all players within 10m, including yourself.');
         emit('chat:addSuggestion', '/fly', 'Enable/disable fly/noclip.');

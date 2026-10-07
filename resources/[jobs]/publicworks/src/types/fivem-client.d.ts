@@ -19,6 +19,7 @@ declare function SetVehicleOnGroundProperly(vehicle: number): boolean;
 declare function SetEntityAsMissionEntity(entity: number, scriptHostObject: boolean, grabFromOtherScript: boolean): void;
 declare function SetVehicleNumberPlateText(vehicle: number, text: string): void;
 declare function NetworkGetNetworkIdFromEntity(entity: number): number;
+declare function NetworkGetEntityFromNetworkId(netId: number): number;
 declare function SetNetworkIdCanMigrate(netId: number, toggle: boolean): void;
 declare function DeleteEntity(entity: number): void;
 declare function NetworkRequestControlOfEntity(entity: number): boolean;

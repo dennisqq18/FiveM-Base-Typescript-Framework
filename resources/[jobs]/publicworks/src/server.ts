@@ -64,6 +64,14 @@ function playerNear(source: number, point: PublicWorksPosition, radius: number):
   return Boolean(position && distance(position, point) <= radius);
 }
 
+function getGarbageVehicle(session: PublicWorksSession): number {
+  if (session.type !== 'garbage' || session.vehicleNetId <= 0) return 0;
+  const vehicle = NetworkGetEntityFromNetworkId(session.vehicleNetId);
+  if (!vehicle || !DoesEntityExist(vehicle)) return 0;
+  if (GetEntityModel(vehicle) !== GetHashKey(PublicWorksConfig.garbage.vehicleModel)) return 0;
+  return vehicle;
+}
+
 function allowEvent(source: number, action: string, cooldown: number = PublicWorksConfig.actionCooldownMs): boolean {
   const key = `${source}:${action}`;
   const now = Date.now();
@@ -239,6 +247,15 @@ onNet('publicworks:vehicleReady', (jobIdInput: string, netIdInput: number) => {
   session.lastActionAt = Date.now();
 });
 
+onNet('publicworks:vehicleMissing', (jobIdInput: string) => {
+  const source = Number((globalThis as any).source);
+  const session = activeJobs.get(source);
+  if (!session || session.type !== 'garbage' || session.jobId !== String(jobIdInput ?? '') || session.vehicleNetId <= 0) return;
+  if (!allowEvent(source, 'vehicleMissing', 750)) return;
+  if (getGarbageVehicle(session)) return;
+  cleanupSession(source, 'The garbage truck disappeared or was deleted. The shift was cancelled and no payment will be issued.');
+});
+
 onNet('publicworks:garbage:pickup', (jobIdInput: string, stepInput: number) => {
   const source = Number((globalThis as any).source);
   const session = activeJobs.get(source);
@@ -248,6 +265,7 @@ onNet('publicworks:garbage:pickup', (jobIdInput: string, stepInput: number) => {
   const point = session.points[session.step];
   if (!point || !playerNear(source, point.position, PublicWorksConfig.serverValidationRadius)) return;
   if (session.vehicleNetId <= 0) return message(source, 'The service vehicle is not synchronized.', 'error');
+  if (!getGarbageVehicle(session)) return cleanupSession(source, 'The garbage truck no longer exists. The shift was cancelled with no payment.');
 
   session.phase = 'carry';
   session.carriedSince = Date.now();
@@ -264,8 +282,8 @@ onNet('publicworks:garbage:deposit', (jobIdInput: string, stepInput: number, veh
   if (!allowEvent(source, 'garbageDeposit')) return;
   if (vehicleNetId !== session.vehicleNetId || Date.now() - session.carriedSince < PublicWorksConfig.garbage.minimumCarryMs) return;
 
-  const vehicle = NetworkGetEntityFromNetworkId(session.vehicleNetId);
-  if (!vehicle || !DoesEntityExist(vehicle)) return cleanupSession(source, 'The garbage truck no longer exists. The shift was cancelled.');
+  const vehicle = getGarbageVehicle(session);
+  if (!vehicle) return cleanupSession(source, 'The garbage truck no longer exists. The shift was cancelled with no payment.');
   const [vx, vy, vz] = GetEntityCoords(vehicle);
   if (!playerNear(source, { x: vx, y: vy, z: vz }, 8.0)) return;
 
@@ -310,8 +328,8 @@ onNet('publicworks:finish', (jobIdInput: string) => {
   if (!playerNear(source, PublicWorksConfig.depot.position, PublicWorksConfig.depotValidationRadius)) return;
 
   if (session.type === 'garbage') {
-    const vehicle = NetworkGetEntityFromNetworkId(session.vehicleNetId);
-    if (!vehicle || !DoesEntityExist(vehicle)) return message(source, 'You must return the garbage truck.', 'error');
+    const vehicle = getGarbageVehicle(session);
+    if (!vehicle) return cleanupSession(source, 'The garbage truck no longer exists. The shift was cancelled with no payment.');
     const [vx, vy, vz] = GetEntityCoords(vehicle);
     if (distance({ x: vx, y: vy, z: vz }, PublicWorksConfig.depot.vehicleReturn) > 20.0) {
       return message(source, 'Park the garbage truck in the return area.', 'error');
@@ -388,6 +406,15 @@ RegisterCommand('jobstats', (source) => {
   message(source, `Cleaning: level ${sweeperLevel}, ${progress.sweeper.shifts} shifts, ${progress.sweeper.tasks} points, $${progress.sweeper.earnings.toLocaleString()} earned.`, 'info');
 }, false);
 
+// Low-frequency server-authoritative watchdog: catches /dv or any other deletion
+// even when the player is not interacting with a route point. Cost is O(active garbage shifts).
+setInterval(() => {
+  for (const [source, session] of activeJobs) {
+    if (session.type !== 'garbage' || session.vehicleNetId <= 0) continue;
+    if (!getGarbageVehicle(session)) cleanupSession(source, 'The garbage truck disappeared or was deleted. The shift was cancelled and no payment will be issued.');
+  }
+}, 2000);
+
 setInterval(() => {
   const now = Date.now();
   for (const [source, session] of activeJobs) {
@@ -413,7 +440,7 @@ on('onResourceStart', (resourceName: string) => {
   if (resourceName !== PUBLICWORKS_RESOURCE) return;
   if (GetResourceState('runtime') === 'started') {
     try {
-      (globalThis as any).exports.runtime.RegisterModule('publicworks', '1.0.0', PUBLICWORKS_RESOURCE);
+      (globalThis as any).exports.runtime.RegisterModule('publicworks', '1.0.1', PUBLICWORKS_RESOURCE);
       (globalThis as any).exports.runtime.ReportHealth('publicworks', 'healthy', { activeJobs: activeJobs.size });
     } catch {}
   }

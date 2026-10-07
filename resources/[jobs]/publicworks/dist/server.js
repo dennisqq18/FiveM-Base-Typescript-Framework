@@ -129,6 +129,16 @@ function playerNear(source, point, radius) {
     const position = playerPosition(source);
     return Boolean(position && distance(position, point) <= radius);
 }
+function getGarbageVehicle(session) {
+    if (session.type !== 'garbage' || session.vehicleNetId <= 0)
+        return 0;
+    const vehicle = NetworkGetEntityFromNetworkId(session.vehicleNetId);
+    if (!vehicle || !DoesEntityExist(vehicle))
+        return 0;
+    if (GetEntityModel(vehicle) !== GetHashKey(PublicWorksConfig.garbage.vehicleModel))
+        return 0;
+    return vehicle;
+}
 function allowEvent(source, action, cooldown = PublicWorksConfig.actionCooldownMs) {
     const key = `${source}:${action}`;
     const now = Date.now();
@@ -300,6 +310,17 @@ onNet('publicworks:vehicleReady', (jobIdInput, netIdInput) => {
     session.vehicleNetId = netId;
     session.lastActionAt = Date.now();
 });
+onNet('publicworks:vehicleMissing', (jobIdInput) => {
+    const source = Number(globalThis.source);
+    const session = activeJobs.get(source);
+    if (!session || session.type !== 'garbage' || session.jobId !== String(jobIdInput ?? '') || session.vehicleNetId <= 0)
+        return;
+    if (!allowEvent(source, 'vehicleMissing', 750))
+        return;
+    if (getGarbageVehicle(session))
+        return;
+    cleanupSession(source, 'The garbage truck disappeared or was deleted. The shift was cancelled and no payment will be issued.');
+});
 onNet('publicworks:garbage:pickup', (jobIdInput, stepInput) => {
     const source = Number(globalThis.source);
     const session = activeJobs.get(source);
@@ -313,6 +334,8 @@ onNet('publicworks:garbage:pickup', (jobIdInput, stepInput) => {
         return;
     if (session.vehicleNetId <= 0)
         return message(source, 'The service vehicle is not synchronized.', 'error');
+    if (!getGarbageVehicle(session))
+        return cleanupSession(source, 'The garbage truck no longer exists. The shift was cancelled with no payment.');
     session.phase = 'carry';
     session.carriedSince = Date.now();
     session.lastActionAt = Date.now();
@@ -329,9 +352,9 @@ onNet('publicworks:garbage:deposit', (jobIdInput, stepInput, vehicleNetIdInput) 
         return;
     if (vehicleNetId !== session.vehicleNetId || Date.now() - session.carriedSince < PublicWorksConfig.garbage.minimumCarryMs)
         return;
-    const vehicle = NetworkGetEntityFromNetworkId(session.vehicleNetId);
-    if (!vehicle || !DoesEntityExist(vehicle))
-        return cleanupSession(source, 'The garbage truck no longer exists. The shift was cancelled.');
+    const vehicle = getGarbageVehicle(session);
+    if (!vehicle)
+        return cleanupSession(source, 'The garbage truck no longer exists. The shift was cancelled with no payment.');
     const [vx, vy, vz] = GetEntityCoords(vehicle);
     if (!playerNear(source, { x: vx, y: vy, z: vz }, 8.0))
         return;
@@ -381,9 +404,9 @@ onNet('publicworks:finish', (jobIdInput) => {
     if (!playerNear(source, PublicWorksConfig.depot.position, PublicWorksConfig.depotValidationRadius))
         return;
     if (session.type === 'garbage') {
-        const vehicle = NetworkGetEntityFromNetworkId(session.vehicleNetId);
-        if (!vehicle || !DoesEntityExist(vehicle))
-            return message(source, 'You must return the garbage truck.', 'error');
+        const vehicle = getGarbageVehicle(session);
+        if (!vehicle)
+            return cleanupSession(source, 'The garbage truck no longer exists. The shift was cancelled with no payment.');
         const [vx, vy, vz] = GetEntityCoords(vehicle);
         if (distance({ x: vx, y: vy, z: vz }, PublicWorksConfig.depot.vehicleReturn) > 20.0) {
             return message(source, 'Park the garbage truck in the return area.', 'error');
@@ -454,6 +477,14 @@ RegisterCommand('jobstats', (source) => {
     message(source, `Cleaning: level ${sweeperLevel}, ${progress.sweeper.shifts} shifts, ${progress.sweeper.tasks} points, $${progress.sweeper.earnings.toLocaleString()} earned.`, 'info');
 }, false);
 setInterval(() => {
+    for (const [source, session] of activeJobs) {
+        if (session.type !== 'garbage' || session.vehicleNetId <= 0)
+            continue;
+        if (!getGarbageVehicle(session))
+            cleanupSession(source, 'The garbage truck disappeared or was deleted. The shift was cancelled and no payment will be issued.');
+    }
+}, 2000);
+setInterval(() => {
     const now = Date.now();
     for (const [source, session] of activeJobs) {
         if (now - session.startedAt > PublicWorksConfig.maximumShiftMs) {
@@ -479,7 +510,7 @@ on('onResourceStart', (resourceName) => {
         return;
     if (GetResourceState('runtime') === 'started') {
         try {
-            globalThis.exports.runtime.RegisterModule('publicworks', '1.0.0', PUBLICWORKS_RESOURCE);
+            globalThis.exports.runtime.RegisterModule('publicworks', '1.0.1', PUBLICWORKS_RESOURCE);
             globalThis.exports.runtime.ReportHealth('publicworks', 'healthy', { activeJobs: activeJobs.size });
         }
         catch { }

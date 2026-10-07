@@ -10,6 +10,8 @@ interface ClientPublicWorksJob {
   phase: PublicWorksPhase;
   level: number;
   truck: number;
+  truckNetId: number;
+  vehicleMissingReported: boolean;
   routeBlip: number;
   truckBlip: number;
   bagObject: number;
@@ -104,6 +106,25 @@ async function requestControl(entity: number, timeoutMs = 1200): Promise<boolean
   return NetworkHasControlOfEntity(entity);
 }
 
+function resolveGarbageTruck(job: ClientPublicWorksJob): number {
+  if (job.type !== 'garbage' || job.truckNetId <= 0) return job.truck;
+  if (job.truck && DoesEntityExist(job.truck)) return job.truck;
+
+  const entity = NetworkGetEntityFromNetworkId(job.truckNetId);
+  if (entity && DoesEntityExist(entity)) {
+    job.truck = entity;
+    job.vehicleMissingReported = false;
+    return entity;
+  }
+
+  if (!job.vehicleMissingReported) {
+    job.vehicleMissingReported = true;
+    chat('The garbage truck disappeared. The shift is being cancelled with no payment...', 'error');
+    emitNet('publicworks:vehicleMissing', job.jobId);
+  }
+  return 0;
+}
+
 function updateRouteBlip(): void {
   const job = activeJob;
   if (!job) return;
@@ -135,6 +156,8 @@ async function spawnGarbageTruck(job: ClientPublicWorksJob): Promise<void> {
   if (!netId) throw new Error('The garbage truck did not receive a network ID.');
   SetNetworkIdCanMigrate(netId, true);
   job.truck = vehicle;
+  job.truckNetId = netId;
+  job.vehicleMissingReported = false;
   job.truckBlip = AddBlipForEntity(vehicle);
   SetBlipSprite(job.truckBlip, 67);
   SetBlipColour(job.truckBlip, 2);
@@ -274,6 +297,8 @@ onNet('publicworks:jobStarted', (payload: any) => {
       phase: type === 'garbage' ? 'pickup' : 'work',
       level: Math.max(1, Number(payload?.level ?? 1)),
       truck: 0,
+      truckNetId: 0,
+      vehicleMissingReported: false,
       routeBlip: 0,
       truckBlip: 0,
       bagObject: 0,
@@ -374,6 +399,10 @@ function handleInteraction(): number {
     return depotDistance < 45.0 ? 0 : 350;
   }
 
+  if (job.type === 'garbage' && job.truckNetId > 0 && !resolveGarbageTruck(job)) {
+    return 250;
+  }
+
   if (job.pendingSince && Date.now() - job.pendingSince > 5000) {
     job.busy = false;
     job.pendingSince = 0;
@@ -394,10 +423,6 @@ function handleInteraction(): number {
   }
 
   if (job.type === 'garbage' && job.phase === 'carry') {
-    if (!job.truck || !DoesEntityExist(job.truck)) {
-      drawPrompt('The garbage truck is missing. Use /stopjob.', 0.86);
-      return 300;
-    }
     const [x, y, z] = GetOffsetFromEntityInWorldCoords(job.truck, 0.0, -4.15, 0.0);
     const rear = { x, y, z };
     const rearDistance = distanceTo(rear);
