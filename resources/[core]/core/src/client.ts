@@ -303,7 +303,6 @@ async function spawnCharacter(data: PlayerData, position?: Position, spawnId = '
 
   playerData = data;
   loaded = true;
-  applyWorldPolicy();
 
   await ensureScreenVisible();
 
@@ -421,7 +420,6 @@ onNet('rumble:character:selected', (data: any) => {
 onNet('rumble:player:loaded', (data: PlayerData) => {
   playerData = data;
   loaded = true;
-  applyWorldPolicy();
   emit('rumble:client:playerLoaded', data);
 });
 
@@ -949,7 +947,6 @@ async function serverCallback<K extends RumbleCallbackName>(
 on('onClientResourceStart', (resourceName: string) => {
   if (resourceName !== GetCurrentResourceName()) return;
 
-  applyWorldPolicy();
 
   setTimeout(() => {
     emit('chat:addSuggestion', '/ara', 'Revive all players within 10m, including yourself.');

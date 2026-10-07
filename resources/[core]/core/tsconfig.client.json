@@ -17,7 +17,6 @@
     "src/shared/types.ts",
     "src/shared/utils.ts",
     "src/config/client.config.ts",
-    "src/client/world/world.policy.ts",
     "src/client.ts"
   ]
 }

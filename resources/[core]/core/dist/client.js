@@ -38,58 +38,8 @@ const ClientConfig = Object.freeze({
         cameraDistance: 2.25,
         cameraHeight: 0.72,
         cameraFov: 40.0,
-    }),
-    world: Object.freeze({
-        disableWantedSystem: true,
-        disableAmbientPolice: true,
-        disableAmbientNpcHostility: true,
-    }),
+    })
 });
-const PASSIVE_NPC_RELATIONSHIP_GROUPS = Object.freeze([
-    'HATES_PLAYER',
-    'AMBIENT_GANG_LOST',
-    'AMBIENT_GANG_MEXICAN',
-    'AMBIENT_GANG_FAMILY',
-    'AMBIENT_GANG_BALLAS',
-    'AMBIENT_GANG_MARABUNTE',
-    'AMBIENT_GANG_CULT',
-    'AMBIENT_GANG_SALVA',
-    'AMBIENT_GANG_WEICHENG',
-    'AMBIENT_GANG_HILLBILLY',
-]);
-function applyPassiveNpcPolicy(player) {
-    SetEveryoneIgnorePlayer(player, true);
-    SetPlayerCanBeHassledByGangs(player, false);
-    SetIgnoreLowPriorityShockingEvents(player, true);
-    const playerGroup = GetHashKey('PLAYER');
-    for (const groupName of PASSIVE_NPC_RELATIONSHIP_GROUPS) {
-        const group = GetHashKey(groupName);
-        SetRelationshipBetweenGroups(2, group, playerGroup);
-        SetRelationshipBetweenGroups(2, playerGroup, group);
-    }
-}
-function applyWorldPolicy() {
-    const player = PlayerId();
-    if (ClientConfig.world.disableWantedSystem) {
-        SetMaxWantedLevel(0);
-        ClearPlayerWantedLevel(player);
-        SetPlayerWantedLevel(player, 0, false);
-        SetPlayerWantedLevelNow(player, false);
-    }
-    if (ClientConfig.world.disableAmbientPolice) {
-        SetPoliceIgnorePlayer(player, true);
-        SetDispatchCopsForPlayer(player, false);
-        SetCreateRandomCops(false);
-        SetCreateRandomCopsNotOnScenarios(false);
-        SetCreateRandomCopsOnScenarios(false);
-        for (let service = 1; service <= 15; service++) {
-            EnableDispatchService(service, false);
-        }
-    }
-    if (ClientConfig.world.disableAmbientNpcHostility) {
-        applyPassiveNpcPolicy(player);
-    }
-}
 const clientDelay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let availableSpawns = new Map();
 let characterPreviewCamera = 0;
@@ -321,7 +271,6 @@ async function spawnCharacter(data, position, spawnId = 'last') {
     }
     playerData = data;
     loaded = true;
-    applyWorldPolicy();
     await ensureScreenVisible();
     chat(`Welcome, ${data.character.firstName} ${data.character.lastName}. ID: ${data.playerId} | State ID: ${data.character.stateId}`, 'success');
     emitNet('rumble:player:spawned', spawnId);
@@ -426,7 +375,6 @@ onNet('rumble:character:selected', (data) => {
 onNet('rumble:player:loaded', (data) => {
     playerData = data;
     loaded = true;
-    applyWorldPolicy();
     emit('rumble:client:playerLoaded', data);
 });
 onNet('rumble:money:update', (account, amount) => {
@@ -908,7 +856,6 @@ async function serverCallback(name, payload, timeoutMs = 10000) {
 on('onClientResourceStart', (resourceName) => {
     if (resourceName !== GetCurrentResourceName())
         return;
-    applyWorldPolicy();
     setTimeout(() => {
         emit('chat:addSuggestion', '/ara', 'Revive all players within 10m, including yourself.');
         emit('chat:addSuggestion', '/fly', 'Enable/disable fly/noclip.');

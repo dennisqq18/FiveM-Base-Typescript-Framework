@@ -1,6 +1,6 @@
 const Config = Object.freeze({
   frameworkName: 'Rumble',
-  version: '0.10.5',
+  version: '0.10.6',
   defaultCash: 500,
   defaultCard: 5000,
   maxCharacters: 5,

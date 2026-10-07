@@ -7,10 +7,5 @@ const ClientConfig = Object.freeze({
     cameraDistance: 2.25,
     cameraHeight: 0.72,
     cameraFov: 40.0,
-  }),
-  world: Object.freeze({
-    disableWantedSystem: true,
-    disableAmbientPolice: true,
-    disableAmbientNpcHostility: true,
-  }),
+  })
 });

@@ -33,7 +33,6 @@
     "src/server/services/database.service.ts",
     "src/server.ts",
     "src/config/client.config.ts",
-    "src/client/world/world.policy.ts",
     "src/client.ts"
   ]
 }
