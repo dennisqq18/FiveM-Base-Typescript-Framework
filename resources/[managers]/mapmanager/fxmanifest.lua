@@ -1,0 +1,7 @@
+fx_version 'cerulean'
+game 'gta5'
+version '1.0.0'
+author 'Rumble'
+description 'FiveM mapmanager compatibility resource'
+client_script 'client.lua'
+server_script 'server.lua'

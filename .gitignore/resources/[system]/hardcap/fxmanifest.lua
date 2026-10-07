@@ -1,0 +1,7 @@
+fx_version 'cerulean'
+game 'gta5'
+version '1.0.0'
+author 'Rumble'
+description 'FiveM hardcap compatibility resource'
+server_script 'server.lua'
+client_script 'client.lua'

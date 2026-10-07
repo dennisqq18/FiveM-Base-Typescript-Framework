@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "none",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "lib": [
+      "ES2021",
+      "DOM"
+    ]
+  },
+  "files": [
+    "src/types/fivem-server.d.ts",
+    "src/types/fivem-client.d.ts",
+    "src/shared.ts",
+    "src/shared-utils.ts",
+    "src/server/config.ts",
+    "src/server/utils.ts",
+    "src/server/database.ts",
+    "src/server/cache.ts",
+    "src/server/security.ts",
+    "src/server/logger.ts",
+    "src/server/repositories/player.repository.ts",
+    "src/server/repositories/character.repository.ts",
+    "src/server/repositories/metadata.repository.ts",
+    "src/server/repositories/inventory.repository.ts",
+    "src/server/repositories/vehicle.repository.ts",
+    "src/server/repositories/money.repository.ts",
+    "src/server/repositories/log.repository.ts",
+    "src/server/repositories/migration.repository.ts",
+    "src/server.ts",
+    "src/client.ts"
+  ]
+}

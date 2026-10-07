@@ -1,0 +1,18 @@
+{
+  "name": "core",
+  "version": "0.8.6",
+  "private": true,
+  "description": "Standalone TypeScript FiveM framework core",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "build": "npm run typecheck && npm run build:server && npm run build:client && npm run check:dist",
+    "build:server": "tsc -p tsconfig.server.json",
+    "build:client": "tsc -p tsconfig.client.json",
+    "check:dist": "node --check dist/server.js && node --check dist/client.js",
+    "watch:server": "tsc -p tsconfig.server.json --watch",
+    "watch:client": "tsc -p tsconfig.client.json --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}
