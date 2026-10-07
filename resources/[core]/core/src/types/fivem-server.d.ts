@@ -8,7 +8,8 @@ declare function RegisterCommand(
   restricted: boolean
 ): void;
 declare function GetCurrentResourceName(): string;
-declare function GetPlayerIdentifiers(source: number | string): string[];
+declare function GetNumPlayerIdentifiers(source: number | string): number;
+declare function GetPlayerIdentifier(source: number | string, index: number): string | null;
 declare function GetPlayerName(source: number | string): string | null;
 declare function getPlayers(): string[];
 declare function GetPlayerPed(source: number | string): number;

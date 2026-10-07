@@ -189,6 +189,16 @@ function sendPlayerState() {
     emitNet('rumble:player:updateState');
 }
 setInterval(sendPlayerState, 15000);
+onNet('rumble:player:loadError', (text) => {
+    registrationOpen = false;
+    selectorOpen = false;
+    spawnOpen = false;
+    refreshNuiFocus();
+    ShutdownLoadingScreen();
+    ShutdownLoadingScreenNui();
+    DoScreenFadeIn(250);
+    chat(String(text || 'Character loading failed. Check the server console.'), 'error');
+});
 onNet('rumble:character:registrationRequired', (profile) => {
     openRegistration(profile);
 });
@@ -760,9 +770,9 @@ on('onClientResourceStart', (resourceName) => {
         emit('chat:addSuggestion', '/fly', 'Enable or disable fly/noclip.');
         emit('chat:addSuggestion', '/gotow', 'Teleport to the waypoint set on the map.');
         emit('chat:addSuggestion', '/tp', 'Teleport to coordinates.', [
-            { name: 'x', help: 'Coordonata X' },
-            { name: 'y', help: 'Coordonata Y' },
-            { name: 'z', help: 'Coordonata Z' },
+            { name: 'x', help: 'X coordinate' },
+            { name: 'y', help: 'Y coordinate' },
+            { name: 'z', help: 'Z coordinate' },
             { name: 'heading', help: 'Optional heading' },
         ]);
         emit('chat:addSuggestion', '/bring', 'Bring a player to you.', [{ name: 'id', help: 'Server ID' }]);

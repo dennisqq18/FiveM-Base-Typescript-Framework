@@ -42,8 +42,18 @@ function serializedSize(value: any): number {
   }
 }
 
+function getPlayerIdentifiers(source: number): string[] {
+  const identifiers: string[] = [];
+  const count = GetNumPlayerIdentifiers(source);
+  for (let index = 0; index < count; index++) {
+    const identifier = GetPlayerIdentifier(source, index);
+    if (identifier) identifiers.push(identifier);
+  }
+  return identifiers;
+}
+
 function getPrimaryIdentifier(source: number): string | null {
-  const identifiers = GetPlayerIdentifiers(source);
+  const identifiers = getPlayerIdentifiers(source);
   return identifiers.find((id) => id.startsWith('license:')) ?? identifiers.find((id) => id.startsWith('fivem:')) ?? identifiers[0] ?? null;
 }
 

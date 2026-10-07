@@ -31,7 +31,7 @@ var RumbleShared;
 })(RumbleShared || (RumbleShared = {}));
 const Config = Object.freeze({
     frameworkName: 'Rumble',
-    version: '0.8.5',
+    version: '0.8.7',
     defaultCash: Math.max(0, GetConvarInt('rumble_default_cash', 500)),
     defaultCard: Math.max(0, GetConvarInt('rumble_default_card', 5000)),
     maxMoney: Math.max(100000, GetConvarInt('rumble_max_money', 2000000000)),
@@ -90,8 +90,18 @@ function serializedSize(value) {
         return Number.MAX_SAFE_INTEGER;
     }
 }
+function getPlayerIdentifiers(source) {
+    const identifiers = [];
+    const count = GetNumPlayerIdentifiers(source);
+    for (let index = 0; index < count; index++) {
+        const identifier = GetPlayerIdentifier(source, index);
+        if (identifier)
+            identifiers.push(identifier);
+    }
+    return identifiers;
+}
 function getPrimaryIdentifier(source) {
-    const identifiers = GetPlayerIdentifiers(source);
+    const identifiers = getPlayerIdentifiers(source);
     return identifiers.find((id) => id.startsWith('license:')) ?? identifiers.find((id) => id.startsWith('fivem:')) ?? identifiers[0] ?? null;
 }
 function normalizeDateOfBirth(value) {
@@ -477,7 +487,7 @@ function isAdmin(source) {
         return true;
     if (!Config.adminIdentifier || Config.adminIdentifier.includes('PASTE_'))
         return false;
-    return GetPlayerIdentifiers(source).includes(Config.adminIdentifier);
+    return getPlayerIdentifiers(source).includes(Config.adminIdentifier);
 }
 function requireAdmin(source) {
     if (isAdmin(source))
@@ -1459,6 +1469,7 @@ onNet('rumble:player:requestLoad', () => {
         return;
     void loadPlayer(source).catch((error) => {
         Logger.error('PLAYER', 'Failed loading player', { source, error: String(error) });
+        emitNet('rumble:player:loadError', source, 'Character loading failed. Check the server console.');
         message(source, 'Character loading failed. Check the server console.', 'error');
     });
 });

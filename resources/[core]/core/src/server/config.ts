@@ -1,6 +1,6 @@
 const Config = Object.freeze({
   frameworkName: 'Rumble',
-  version: '0.8.5',
+  version: '0.8.7',
   defaultCash: Math.max(0, GetConvarInt('rumble_default_cash', 500)),
   defaultCard: Math.max(0, GetConvarInt('rumble_default_card', 5000)),
   maxMoney: Math.max(100000, GetConvarInt('rumble_max_money', 2000000000)),

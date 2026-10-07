@@ -124,7 +124,7 @@ function message(source: number, text: string, kind: 'info' | 'success' | 'error
 function isAdmin(source: number): boolean {
   if (source === 0) return true;
   if (!Config.adminIdentifier || Config.adminIdentifier.includes('PASTE_')) return false;
-  return GetPlayerIdentifiers(source).includes(Config.adminIdentifier);
+  return getPlayerIdentifiers(source).includes(Config.adminIdentifier);
 }
 
 function requireAdmin(source: number): boolean {
@@ -1171,6 +1171,7 @@ onNet('rumble:player:requestLoad', () => {
   if (!allowRate(source, 'player:requestLoad', 4, 10000)) return;
   void loadPlayer(source).catch((error) => {
     Logger.error('PLAYER', 'Failed loading player', { source, error: String(error) });
+    emitNet('rumble:player:loadError', source, 'Character loading failed. Check the server console.');
     message(source, 'Character loading failed. Check the server console.', 'error');
   });
 });
