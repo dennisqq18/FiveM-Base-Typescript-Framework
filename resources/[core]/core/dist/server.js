@@ -31,7 +31,7 @@ var RumbleShared;
 })(RumbleShared || (RumbleShared = {}));
 const Config = Object.freeze({
     frameworkName: 'Rumble',
-    version: '0.10.7',
+    version: '0.11.2',
     defaultCash: 500,
     defaultCard: 5000,
     maxCharacters: 5,
@@ -48,7 +48,24 @@ const Config = Object.freeze({
     maxRpcPayloadBytes: 16384,
     maxMetadataBytes: 16000,
     securityLogWindowMs: 10000,
-    expectedMigration: 3,
+    expectedMigration: 4,
+    apiVersion: '1.0',
+    environment: 'development',
+    slowQueryThresholdMs: 100,
+    databaseCircuitFailureThreshold: 5,
+    databaseCircuitOpenMs: 3000,
+    rpcIdempotencyTtlMs: 30000,
+    shutdownTimeoutMs: 5000,
+    features: Object.freeze({
+        needs: true,
+        inventory: true,
+        vehicles: true,
+        metadata: true,
+        money: true,
+        characterLock: true,
+        idempotentRpc: true,
+        queryProfiler: true,
+    }),
     adminIdentifier: GetConvar('rumble_admin_identifier', '').trim(),
 });
 const DEFAULT_SPAWN = {
@@ -168,23 +185,150 @@ function sanitizeReason(value, fallback = 'unknown') {
     const text = String(value ?? fallback).trim();
     return (text || fallback).slice(0, 128);
 }
+const databaseMetrics = {
+    queries: 0,
+    failed: 0,
+    slow: 0,
+    totalMs: 0,
+    maxMs: 0,
+    consecutiveFailures: 0,
+    circuitOpenUntil: 0,
+};
 function oxmysql() {
     const ox = globalThis.exports?.oxmysql;
     if (!ox)
         throw new CoreError('OXMYSQL_UNAVAILABLE', 'oxmysql export is not available.');
     return ox;
 }
+function databaseLabel(query) {
+    return query.replace(/\s+/g, ' ').trim().slice(0, 120);
+}
+async function runDatabaseCall(query, operation) {
+    const current = Date.now();
+    if (databaseMetrics.circuitOpenUntil > current)
+        throw new CoreError('DATABASE_CIRCUIT_OPEN', 'Database circuit breaker is open.', { retryAfterMs: databaseMetrics.circuitOpenUntil - current });
+    const started = performance.now();
+    databaseMetrics.queries++;
+    let failed = false;
+    try {
+        const result = await operation();
+        databaseMetrics.consecutiveFailures = 0;
+        return result;
+    }
+    catch (error) {
+        failed = true;
+        databaseMetrics.failed++;
+        databaseMetrics.consecutiveFailures++;
+        if (databaseMetrics.consecutiveFailures >= Config.databaseCircuitFailureThreshold)
+            databaseMetrics.circuitOpenUntil = Date.now() + Config.databaseCircuitOpenMs;
+        throw error;
+    }
+    finally {
+        const durationMs = Number((performance.now() - started).toFixed(2));
+        databaseMetrics.totalMs += durationMs;
+        databaseMetrics.maxMs = Math.max(databaseMetrics.maxMs, durationMs);
+        const slow = durationMs >= Config.slowQueryThresholdMs;
+        if (slow)
+            databaseMetrics.slow++;
+        if (Config.features.queryProfiler)
+            emit('rumble:telemetry:query', { label: databaseLabel(query), durationMs, slow, failed });
+    }
+}
 async function dbQuery(query, params = []) {
-    return await oxmysql().query_async(query, params);
+    return await runDatabaseCall(query, async () => await oxmysql().query_async(query, params));
 }
 async function dbSingle(query, params = []) {
-    return await oxmysql().single_async(query, params);
+    return await runDatabaseCall(query, async () => await oxmysql().single_async(query, params));
 }
 async function dbInsert(query, params = []) {
-    return Number(await oxmysql().insert_async(query, params));
+    return await runDatabaseCall(query, async () => Number(await oxmysql().insert_async(query, params)));
 }
 async function dbUpdate(query, params = []) {
-    return Number(await oxmysql().update_async(query, params));
+    return await runDatabaseCall(query, async () => Number(await oxmysql().update_async(query, params)));
+}
+async function dbTransaction(queries) {
+    if (!Array.isArray(queries) || queries.length === 0)
+        return true;
+    const label = `transaction:${queries.length}`;
+    return await runDatabaseCall(label, async () => Boolean(await oxmysql().transaction_async(queries.map((entry) => ({ query: entry.query, values: entry.values ?? [] })))));
+}
+function getDatabaseMetrics() {
+    return {
+        ...databaseMetrics,
+        averageMs: databaseMetrics.queries > 0 ? Number((databaseMetrics.totalMs / databaseMetrics.queries).toFixed(2)) : 0,
+    };
+}
+class InternalEventBus {
+    constructor() {
+        this.handlers = new Map();
+    }
+    on(name, handler) {
+        const set = this.handlers.get(name) ?? new Set();
+        set.add(handler);
+        this.handlers.set(name, set);
+        return () => {
+            const current = this.handlers.get(name);
+            if (!current)
+                return;
+            current.delete(handler);
+            if (current.size === 0)
+                this.handlers.delete(name);
+        };
+    }
+    async emit(name, ...args) {
+        const handlers = Array.from(this.handlers.get(name) ?? []);
+        if (handlers.length === 0)
+            return;
+        await Promise.allSettled(handlers.map((handler) => Promise.resolve(handler(...args))));
+    }
+    clear() {
+        this.handlers.clear();
+    }
+}
+const CoreEvents = new InternalEventBus();
+class IdempotencyService {
+    constructor() {
+        this.records = new Map();
+    }
+    get(key) {
+        const record = this.records.get(key);
+        if (!record)
+            return null;
+        if (record.expiresAt <= Date.now()) {
+            this.records.delete(key);
+            return null;
+        }
+        return record;
+    }
+    set(key, success, result, error) {
+        this.records.set(key, { expiresAt: Date.now() + Config.rpcIdempotencyTtlMs, success, result, error });
+        if (this.records.size > 2048)
+            this.cleanup();
+    }
+    clearSource(source) {
+        const prefix = `${source}:`;
+        for (const key of this.records.keys())
+            if (key.startsWith(prefix))
+                this.records.delete(key);
+    }
+    cleanup() {
+        const current = Date.now();
+        for (const [key, record] of this.records)
+            if (record.expiresAt <= current)
+                this.records.delete(key);
+    }
+}
+const RpcIdempotency = new IdempotencyService();
+const coreModules = new Map();
+function registerCoreModule(nameInput, versionInput) {
+    const name = String(nameInput ?? '').trim();
+    if (!/^[a-zA-Z0-9_.:-]{1,64}$/.test(name))
+        return false;
+    coreModules.set(name, { name, version: String(versionInput ?? 'unknown').slice(0, 32), status: 'healthy', updatedAt: Date.now() });
+    return true;
+}
+function getCoreModules() {
+    return Array.from(coreModules.values()).map((entry) => ({ ...entry }));
 }
 class PlayerCache {
     constructor() {
@@ -339,6 +483,7 @@ const CHARACTER_COLUMNS = `
   armor,
   hunger,
   thirst,
+  revision,
   last_played,
   created_at,
   updated_at,
@@ -389,11 +534,11 @@ class CharacterRepository {
             data.position.heading,
         ]);
     }
-    async saveState(characterId, identifier, data) {
-        await dbUpdate(`UPDATE rumble_characters
+    async saveState(characterId, identifier, version, data) {
+        const changed = await dbUpdate(`UPDATE rumble_characters
        SET position_x = ?, position_y = ?, position_z = ?, position_heading = ?,
-           health = ?, armor = ?, hunger = ?, thirst = ?, last_played = CURRENT_TIMESTAMP
-       WHERE id = ? AND player_identifier = ?`, [
+           health = ?, armor = ?, hunger = ?, thirst = ?, revision = revision + 1, last_played = CURRENT_TIMESTAMP
+       WHERE id = ? AND player_identifier = ? AND revision = ?`, [
             data.position.x,
             data.position.y,
             data.position.z,
@@ -404,7 +549,9 @@ class CharacterRepository {
             data.thirst,
             characterId,
             identifier,
+            version,
         ]);
+        return changed > 0;
     }
     async updateIdentity(identifier, characterId, firstName, lastName, dateOfBirth) {
         await dbUpdate(`UPDATE rumble_characters
@@ -492,8 +639,8 @@ class MoneyRepository {
 class LogRepository {
     async insert(data) {
         await dbInsert(`INSERT INTO rumble_logs
-        (category, action, source_identifier, source_character_id, target_identifier, target_character_id, payload)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`, [
+        (category, action, source_identifier, source_character_id, target_identifier, target_character_id, payload, request_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, [
             data.category.slice(0, 48),
             data.action.slice(0, 64),
             data.sourceIdentifier,
@@ -501,6 +648,7 @@ class LogRepository {
             data.targetIdentifier,
             data.targetCharacterId,
             data.payload.slice(0, 16000),
+            data.requestId ? data.requestId.slice(0, 96) : null,
         ]);
     }
 }
@@ -508,8 +656,8 @@ class MigrationRepository {
     async exists(version) {
         return Boolean(await dbSingle('SELECT version FROM rumble_migrations WHERE version = ? LIMIT 1', [version]));
     }
-    async record(version, name) {
-        await dbQuery('INSERT IGNORE INTO rumble_migrations (version, name) VALUES (?, ?)', [version, name]);
+    async record(version, name, checksum = null) {
+        await dbQuery('INSERT IGNORE INTO rumble_migrations (version, name, checksum) VALUES (?, ?, ?)', [version, name, checksum]);
     }
     async latest() {
         const row = await dbSingle('SELECT MAX(version) AS version FROM rumble_migrations');
@@ -563,6 +711,7 @@ async function createFinalSchema() {
       armor SMALLINT UNSIGNED NOT NULL DEFAULT 0,
       hunger TINYINT UNSIGNED NOT NULL DEFAULT 100,
       thirst TINYINT UNSIGNED NOT NULL DEFAULT 100,
+      revision INT UNSIGNED NOT NULL DEFAULT 0,
       last_played TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -597,6 +746,7 @@ async function createFoundationTables() {
       target_identifier VARCHAR(96) NULL,
       target_character_id INT UNSIGNED NULL,
       payload LONGTEXT NULL,
+      request_id VARCHAR(96) NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (id),
       KEY idx_rumble_logs_category (category, action),
@@ -712,16 +862,34 @@ async function applyStaticIdMigration() {
     await dbQuery('ALTER TABLE rumble_money_transactions MODIFY amount BIGINT NOT NULL, MODIFY balance_after BIGINT UNSIGNED NOT NULL');
     await migrationRepository.record(3, 'static_player_ids_and_bigint_money');
 }
+async function applyBackendRuntimeMigration() {
+    const checksumColumn = await dbQuery("SHOW COLUMNS FROM rumble_migrations LIKE 'checksum'");
+    if (checksumColumn.length === 0)
+        await dbQuery('ALTER TABLE rumble_migrations ADD COLUMN checksum VARCHAR(64) NULL AFTER name');
+    const revisionColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'revision'");
+    if (revisionColumn.length === 0)
+        await dbQuery('ALTER TABLE rumble_characters ADD COLUMN revision INT UNSIGNED NOT NULL DEFAULT 0 AFTER thirst');
+    const requestIdColumn = await dbQuery("SHOW COLUMNS FROM rumble_logs LIKE 'request_id'");
+    if (requestIdColumn.length === 0) {
+        await dbQuery('ALTER TABLE rumble_logs ADD COLUMN request_id VARCHAR(96) NULL AFTER payload');
+        await dbQuery('ALTER TABLE rumble_logs ADD KEY idx_rumble_logs_request_id (request_id)');
+    }
+    await migrationRepository.record(4, 'backend_runtime_foundation', 'rumble-004-v1');
+}
 async function initializeDatabase() {
     await waitForDatabase();
     await dbQuery(`
     CREATE TABLE IF NOT EXISTS rumble_migrations (
       version INT UNSIGNED NOT NULL,
       name VARCHAR(96) NOT NULL,
+      checksum VARCHAR(64) NULL,
       applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (version)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+    const checksumColumn = await dbQuery("SHOW COLUMNS FROM rumble_migrations LIKE 'checksum'");
+    if (checksumColumn.length === 0)
+        await dbQuery('ALTER TABLE rumble_migrations ADD COLUMN checksum VARCHAR(64) NULL AFTER name');
     let migration = await migrationRepository.latest();
     if (migration === 0) {
         await createFinalSchema();
@@ -729,6 +897,8 @@ async function initializeDatabase() {
         await applyFoundationMigration();
         await applyStaticIdMigration();
         migration = 3;
+        await applyBackendRuntimeMigration();
+        migration = 4;
     }
     else {
         if (migration < 2) {
@@ -738,6 +908,10 @@ async function initializeDatabase() {
         if (migration < 3) {
             await applyStaticIdMigration();
             migration = 3;
+        }
+        if (migration < 4) {
+            await applyBackendRuntimeMigration();
+            migration = 4;
         }
     }
     databaseReady = true;
@@ -754,6 +928,9 @@ const adminBySource = new Map();
 const loadingPlayers = new Set();
 const creatingCharacters = new Set();
 const rpcHandlers = new Map();
+const rpcValidators = new Map();
+const commandRegistry = new Map();
+const activeCharacterOwners = new Map();
 let databaseReady = false;
 let autosaveRunning = false;
 const playerRepository = new PlayerRepository();
@@ -766,6 +943,7 @@ const logRepository = new LogRepository();
 const migrationRepository = new MigrationRepository();
 const frozenPlayers = new Set();
 let lastHealthCheck = {};
+let logSequence = 0;
 function message(source, text, kind = 'info') {
     const prefix = kind === 'error' ? '^1Rumble' : kind === 'success' ? '^2Rumble' : '^5Rumble';
     emitNet('chat:addMessage', source, {
@@ -799,6 +977,7 @@ function allowRate(source, key, limit, windowMs) {
     return allowed;
 }
 function rejectSecurity(source, action, payload = {}) {
+    emit('rumble:telemetry:securityRejected', { source, action });
     Logger.security(action, { source, ...payload });
     void logAction('security', action, source, source, payload);
 }
@@ -832,6 +1011,7 @@ function toCharacter(row) {
         armor: Number(row.armor ?? 0),
         hunger: Number(row.hunger ?? 100),
         thirst: Number(row.thirst ?? 100),
+        version: Number(row.revision ?? 0),
     };
 }
 function publicPlayer(session) {
@@ -880,6 +1060,9 @@ async function logAction(category, action, source, target, payload = {}) {
         const targetSession = target !== null ? sessions.get(target) : null;
         const sourceIdentifier = source === 0 ? 'console' : sourceSession?.identifier ?? (source !== null ? getCachedIdentifier(source) : null);
         const targetIdentifier = targetSession?.identifier ?? (target !== null ? getCachedIdentifier(target) : null);
+        const requestId = typeof payload.requestId === 'string' && payload.requestId.trim()
+            ? payload.requestId.trim().slice(0, 96)
+            : `${category}:${Date.now().toString(36)}:${(++logSequence).toString(36)}`;
         await logRepository.insert({
             category,
             action,
@@ -888,6 +1071,7 @@ async function logAction(category, action, source, target, payload = {}) {
             targetIdentifier,
             targetCharacterId: targetSession?.character.id ?? null,
             payload: JSON.stringify(payload),
+            requestId,
         });
     }
     catch (error) {
@@ -1097,10 +1281,13 @@ async function createCharacter(identifier, firstName, lastName, dateOfBirth) {
         armor: 0,
         hunger: 100,
         thirst: 100,
+        version: 0,
     };
 }
-function markDirty(session) {
-    session.revision++;
+function markDirty(session, section = 'state') {
+    session.dirty.add(section);
+    if (section === 'state')
+        session.revision++;
 }
 function refreshRuntimeState(session) {
     if (!session.spawned)
@@ -1130,18 +1317,22 @@ function refreshRuntimeState(session) {
     markDirty(session);
 }
 async function saveSession(session, force = false) {
-    if (!force && session.revision <= session.savedRevision)
+    if (!force && !session.dirty.has('state'))
         return;
     const revision = session.revision;
     const c = session.character;
-    await characterRepository.saveState(c.id, session.identifier, {
+    const saved = await characterRepository.saveState(c.id, session.identifier, c.version, {
         position: { ...c.position },
         health: clampNumber(Math.floor(c.health), 0, MAX_HEALTH),
         armor: clampNumber(Math.floor(c.armor), 0, MAX_ARMOR),
         hunger: clampNumber(Math.floor(c.hunger), 0, 100),
         thirst: clampNumber(Math.floor(c.thirst), 0, 100),
     });
+    if (!saved)
+        throw new CoreError('CHARACTER_WRITE_CONFLICT', 'Character state changed outside the active session.', { characterId: c.id, version: c.version });
+    c.version++;
     session.savedRevision = Math.max(session.savedRevision, revision);
+    session.dirty.delete('state');
 }
 async function flushDirtySessions() {
     if (autosaveRunning || !databaseReady || sessions.size === 0)
@@ -1164,6 +1355,11 @@ async function flushDirtySessions() {
     }
 }
 async function selectCharacter(source, identifier, character) {
+    if (Config.features.characterLock) {
+        const owner = activeCharacterOwners.get(character.id);
+        if (owner && owner !== source && GetPlayerName(owner))
+            throw new CoreError('CHARACTER_ALREADY_ACTIVE', 'Character is already active on another connection.', { characterId: character.id, owner });
+    }
     const playerId = getStaticPlayerId(source) || await upsertPlayer(source, identifier);
     const existing = sessions.get(source);
     if (existing)
@@ -1183,8 +1379,10 @@ async function selectCharacter(source, identifier, character) {
         spawned: false,
         revision: 0,
         savedRevision: 0,
+        dirty: new Set(),
     };
     sessions.set(source, session);
+    activeCharacterOwners.set(character.id, source);
     await Promise.all([
         characterRepository.touch(character.id, identifier),
         playerRepository.setActiveCharacter(identifier, character.id),
@@ -1220,11 +1418,13 @@ async function loadPlayer(source) {
             return;
         }
         const playerId = await upsertPlayer(source, identifier);
+        emit('rumble:server:playerConnected', source, { playerId, id: playerId, identifier, name: GetPlayerName(source) ?? `Player ${source}` });
         Logger.info('PLAYER', 'Player connected to framework', { source, playerId, name: GetPlayerName(source) ?? `Player ${source}`, identifier });
         const [characters, activeCharacterId] = await Promise.all([
             listCharacters(identifier),
             playerRepository.getActiveCharacterId(identifier),
         ]);
+        emit('rumble:server:characterSelection', source);
         if (characters.length === 0) {
             emitNet('rumble:character:registrationRequired', source, { mode: 'create', firstName: '', lastName: '', minimumAge: Config.minimumCharacterAge });
             return;
@@ -1255,7 +1455,9 @@ async function persistMetadata(session, key, value) {
     if (serialized.length > Config.maxMetadataBytes)
         return false;
     session.metadata[key] = value;
+    markDirty(session, 'metadata');
     await metadataRepository.set(session.character.id, key, serialized);
+    session.dirty.delete('metadata');
     if (key === 'deathState')
         setPlayerState(session.source, 'rumbleDeathState', String(value));
     emit('rumble:server:metadataChanged', session.source, key, value);
@@ -1496,10 +1698,17 @@ function registerRpc(name, handler) {
         throw new CoreError('RPC_DUPLICATE', 'RPC is already registered.', { name });
     rpcHandlers.set(name, handler);
 }
+function registerValidatedRpc(name, validator, handler) {
+    registerRpc(name, handler);
+    rpcValidators.set(name, validator);
+}
 function registerTypedRpc(name, handler) {
     registerRpc(name, handler);
 }
 function registerRumbleCommand(name, adminOnly, handler) {
+    if (commandRegistry.has(name))
+        throw new CoreError('COMMAND_DUPLICATE', 'Command is already registered.', { name });
+    commandRegistry.set(name, { adminOnly });
     RegisterCommand(name, (source, args, rawCommand) => {
         if (adminOnly && !requireAdmin(source))
             return;
@@ -1525,9 +1734,25 @@ async function setMoney(source, account, amount, reason = 'unknown', actorIdenti
     const finalAmount = Math.floor(amount);
     if (previous === finalAmount)
         return true;
+    const column = account === 'cash' ? 'cash' : 'card';
+    const delta = finalAmount - previous;
+    const safeReason = sanitizeReason(reason);
+    const actor = actorIdentifier ?? session.identifier;
+    const committed = await dbTransaction([
+        {
+            query: `UPDATE rumble_characters SET ${column} = ? WHERE id = ? AND player_identifier = ?`,
+            values: [finalAmount, session.character.id, session.identifier],
+        },
+        {
+            query: `INSERT INTO rumble_money_transactions (character_id, account, amount, balance_after, reason, actor_identifier) VALUES (?, ?, ?, ?, ?, ?)`,
+            values: [session.character.id, account, delta, finalAmount, safeReason, actor],
+        },
+    ]);
+    if (!committed)
+        return false;
     session.character[account] = finalAmount;
-    await characterRepository.updateMoney(session.character.id, session.identifier, account, finalAmount);
-    await moneyRepository.record(session.character.id, account, finalAmount - previous, finalAmount, sanitizeReason(reason), actorIdentifier ?? session.identifier);
+    markDirty(session, 'money');
+    session.dirty.delete('money');
     setPlayerState(source, account === 'cash' ? 'rumbleCash' : 'rumbleCard', finalAmount);
     emitNet('rumble:money:update', source, account, finalAmount, reason);
     emit('rumble:server:moneyChanged', source, account, finalAmount, reason);
@@ -1657,7 +1882,10 @@ on('onResourceStart', (resourceName) => {
     });
 });
 on('onResourceStop', (resourceName) => {
-    if (resourceName !== RESOURCE || !databaseReady)
+    if (resourceName !== RESOURCE)
+        return;
+    CoreEvents.clear();
+    if (!databaseReady)
         return;
     for (const session of sessions.values()) {
         void saveSession(session, true).catch((error) => Logger.error('DATABASE', 'Final save failed', { source: session.source, error: String(error) }));
@@ -1895,20 +2123,49 @@ onNet('rumble:rpc:request', (requestId, name, payload) => {
     const handler = rpcHandlers.get(rpcName);
     if (!handler) {
         rejectSecurity(source, 'unknown_rpc', { rpcName });
-        emitNet('rumble:rpc:response', source, id, false, null, 'RPC necunoscut.');
+        emitNet('rumble:rpc:response', source, id, false, null, 'Unknown RPC.');
         return;
     }
+    const validator = rpcValidators.get(rpcName);
+    if (validator) {
+        let valid = false;
+        try {
+            valid = Boolean(validator(payload));
+        }
+        catch { }
+        if (!valid) {
+            rejectSecurity(source, 'rpc_schema_rejected', { rpcName });
+            emitNet('rumble:rpc:response', source, id, false, null, 'RPC_SCHEMA_REJECTED');
+            return;
+        }
+    }
+    const idempotencyKey = `${source}:${id}`;
+    if (Config.features.idempotentRpc) {
+        const cached = RpcIdempotency.get(idempotencyKey);
+        if (cached) {
+            emitNet('rumble:rpc:response', source, id, cached.success, cached.result, cached.error);
+            return;
+        }
+    }
     void Promise.resolve(handler(source, payload)).then((result) => {
+        if (Config.features.idempotentRpc)
+            RpcIdempotency.set(idempotencyKey, true, result ?? null, null);
+        emit('rumble:telemetry:rpc', { source, rpcName, failed: false });
         emitNet('rumble:rpc:response', source, id, true, result ?? null, null);
     }).catch((error) => {
-        Logger.error('RPC', 'Callback failed', { source, rpcName, error: String(error) });
-        emitNet('rumble:rpc:response', source, id, false, null, 'RPC failed.');
+        const errorCode = error instanceof CoreError ? error.code : 'RPC_FAILED';
+        if (Config.features.idempotentRpc)
+            RpcIdempotency.set(idempotencyKey, false, null, errorCode);
+        emit('rumble:telemetry:rpc', { source, rpcName, failed: true, errorCode });
+        Logger.error('RPC', 'Callback failed', { source, rpcName, error: String(error), errorCode });
+        emitNet('rumble:rpc:response', source, id, false, null, errorCode);
     });
 });
 on('playerDropped', () => {
     const source = Number(globalThis.source);
     const session = sessions.get(source);
     if (session) {
+        activeCharacterOwners.delete(session.character.id);
         refreshRuntimeState(session);
         void saveSession(session, true).catch((error) => Logger.error('DATABASE', 'Could not save dropped player', { source, error: String(error) }));
         void logAction('player', 'disconnected', source, source, { characterId: session.character.id });
@@ -1918,6 +2175,7 @@ on('playerDropped', () => {
     loadingPlayers.delete(source);
     creatingCharacters.delete(source);
     Security.clearSource(source);
+    RpcIdempotency.clearSource(source);
     frozenPlayers.delete(source);
     clearStaticPlayerMapping(source);
 });
@@ -2590,6 +2848,12 @@ exports('RegisterCallback', (name, handler) => {
     registerRpc(String(name), handler);
     return true;
 });
+exports('RegisterValidatedCallback', (name, validator, handler) => {
+    if (typeof validator !== 'function' || typeof handler !== 'function')
+        return false;
+    registerValidatedRpc(String(name), validator, handler);
+    return true;
+});
 exports('RegisterCommand', (name, adminOnly, handler) => {
     registerRumbleCommand(String(name), Boolean(adminOnly), handler);
     return true;
@@ -2601,4 +2865,40 @@ exports('GetConfig', () => ({
     items: ITEM_DEFINITIONS,
     spawns: SPAWNS,
 }));
+exports('GetApiVersion', () => Config.apiVersion);
+exports('GetCapabilities', () => ({
+    apiVersion: Config.apiVersion,
+    version: Config.version,
+    features: { ...Config.features },
+    managers: ['runtime', 'sessions', 'permissions', 'observability', 'gameplay'],
+}));
+exports('GetDiagnostics', () => ({
+    version: Config.version,
+    apiVersion: Config.apiVersion,
+    environment: Config.environment,
+    databaseReady,
+    activeSessions: sessions.size,
+    dirtySessions: Array.from(sessions.values()).filter((session) => session.dirty.size > 0).length,
+    characterLocks: activeCharacterOwners.size,
+    registeredRpc: rpcHandlers.size,
+    validatedRpc: rpcValidators.size,
+    registeredCommands: commandRegistry.size,
+    database: getDatabaseMetrics(),
+    modules: getCoreModules(),
+}));
+exports('RegisterModule', (name, version) => registerCoreModule(name, version));
+exports('PublishEvent', (name, payload) => {
+    const safe = String(name ?? '').trim();
+    if (!/^[a-zA-Z0-9_.:-]{1,96}$/.test(safe))
+        return false;
+    emit(`rumble:event:${safe}`, payload ?? null);
+    void CoreEvents.emit(safe, payload ?? null);
+    return true;
+});
+exports('GetRegisteredCommands', () => Array.from(commandRegistry.entries()).map(([name, data]) => ({ name, ...data })));
+exports('FlushAllPlayers', async () => {
+    const current = Array.from(sessions.values());
+    await Promise.allSettled(current.map((session) => saveSession(session, true)));
+    return true;
+});
 Logger.info('CORE', 'Server script loaded', { resource: RESOURCE, version: Config.version });

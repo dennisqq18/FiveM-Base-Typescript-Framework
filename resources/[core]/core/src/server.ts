@@ -55,6 +55,7 @@ interface Character {
   armor: number;
   hunger: number;
   thirst: number;
+  version: number;
 }
 
 interface PlayerSession {
@@ -68,6 +69,7 @@ interface PlayerSession {
   spawned: boolean;
   revision: number;
   savedRevision: number;
+  dirty: Set<'state' | 'money' | 'metadata' | 'inventory'>;
 }
 
 const RESOURCE = GetCurrentResourceName();
@@ -82,6 +84,9 @@ const adminBySource = new Map<number, boolean>();
 const loadingPlayers = new Set<number>();
 const creatingCharacters = new Set<number>();
 const rpcHandlers = new Map<string, (source: number, payload: any) => any>();
+const rpcValidators = new Map<string, (payload: any) => boolean>();
+const commandRegistry = new Map<string, { adminOnly: boolean }>();
+const activeCharacterOwners = new Map<number, number>();
 let databaseReady = false;
 let autosaveRunning = false;
 
@@ -95,6 +100,7 @@ const logRepository = new LogRepository();
 const migrationRepository = new MigrationRepository();
 const frozenPlayers = new Set<number>();
 let lastHealthCheck: Record<string, any> = {};
+let logSequence = 0;
 
 function message(source: number, text: string, kind: 'info' | 'success' | 'error' = 'info'): void {
   const prefix = kind === 'error' ? '^1Rumble' : kind === 'success' ? '^2Rumble' : '^5Rumble';
@@ -130,6 +136,7 @@ function allowRate(source: number, key: string, limit: number, windowMs: number)
 }
 
 function rejectSecurity(source: number, action: string, payload: Record<string, any> = {}): void {
+  emit('rumble:telemetry:securityRejected', { source, action });
   Logger.security(action, { source, ...payload });
   void logAction('security', action, source, source, payload);
 }
@@ -163,6 +170,7 @@ function toCharacter(row: any): Character {
     armor: Number(row.armor ?? 0),
     hunger: Number(row.hunger ?? 100),
     thirst: Number(row.thirst ?? 100),
+    version: Number(row.revision ?? 0),
   };
 }
 
@@ -221,6 +229,9 @@ async function logAction(
     const targetSession = target !== null ? sessions.get(target) : null;
     const sourceIdentifier = source === 0 ? 'console' : sourceSession?.identifier ?? (source !== null ? getCachedIdentifier(source) : null);
     const targetIdentifier = targetSession?.identifier ?? (target !== null ? getCachedIdentifier(target) : null);
+    const requestId = typeof payload.requestId === 'string' && payload.requestId.trim()
+      ? payload.requestId.trim().slice(0, 96)
+      : `${category}:${Date.now().toString(36)}:${(++logSequence).toString(36)}`;
     await logRepository.insert({
       category,
       action,
@@ -229,6 +240,7 @@ async function logAction(
       targetIdentifier,
       targetCharacterId: targetSession?.character.id ?? null,
       payload: JSON.stringify(payload),
+      requestId,
     });
   } catch (error) {
     Logger.error('DATABASE', 'Could not persist structured log', { category, action, error: String(error) });
@@ -454,11 +466,13 @@ async function createCharacter(
     armor: 0,
     hunger: 100,
     thirst: 100,
+    version: 0,
   };
 }
 
-function markDirty(session: PlayerSession): void {
-  session.revision++;
+function markDirty(session: PlayerSession, section: 'state' | 'money' | 'metadata' | 'inventory' = 'state'): void {
+  session.dirty.add(section);
+  if (section === 'state') session.revision++;
 }
 
 function refreshRuntimeState(session: PlayerSession): void {
@@ -489,17 +503,20 @@ function refreshRuntimeState(session: PlayerSession): void {
 }
 
 async function saveSession(session: PlayerSession, force = false): Promise<void> {
-  if (!force && session.revision <= session.savedRevision) return;
+  if (!force && !session.dirty.has('state')) return;
   const revision = session.revision;
   const c = session.character;
-  await characterRepository.saveState(c.id, session.identifier, {
+  const saved = await characterRepository.saveState(c.id, session.identifier, c.version, {
     position: { ...c.position },
     health: clampNumber(Math.floor(c.health), 0, MAX_HEALTH),
     armor: clampNumber(Math.floor(c.armor), 0, MAX_ARMOR),
     hunger: clampNumber(Math.floor(c.hunger), 0, 100),
     thirst: clampNumber(Math.floor(c.thirst), 0, 100),
   });
+  if (!saved) throw new CoreError('CHARACTER_WRITE_CONFLICT', 'Character state changed outside the active session.', { characterId: c.id, version: c.version });
+  c.version++;
   session.savedRevision = Math.max(session.savedRevision, revision);
+  session.dirty.delete('state');
 }
 
 async function flushDirtySessions(): Promise<void> {
@@ -522,6 +539,10 @@ async function flushDirtySessions(): Promise<void> {
 }
 
 async function selectCharacter(source: number, identifier: string, character: Character): Promise<void> {
+  if (Config.features.characterLock) {
+    const owner = activeCharacterOwners.get(character.id);
+    if (owner && owner !== source && GetPlayerName(owner)) throw new CoreError('CHARACTER_ALREADY_ACTIVE', 'Character is already active on another connection.', { characterId: character.id, owner });
+  }
   const playerId = getStaticPlayerId(source) || await upsertPlayer(source, identifier);
   const existing = sessions.get(source);
   if (existing) await saveSession(existing, true);
@@ -542,9 +563,11 @@ async function selectCharacter(source: number, identifier: string, character: Ch
     spawned: false,
     revision: 0,
     savedRevision: 0,
+    dirty: new Set(),
   };
 
   sessions.set(source, session);
+  activeCharacterOwners.set(character.id, source);
   await Promise.all([
     characterRepository.touch(character.id, identifier),
     playerRepository.setActiveCharacter(identifier, character.id),
@@ -584,12 +607,14 @@ async function loadPlayer(source: number): Promise<void> {
     }
 
     const playerId = await upsertPlayer(source, identifier);
+    emit('rumble:server:playerConnected', source, { playerId, id: playerId, identifier, name: GetPlayerName(source) ?? `Player ${source}` });
     Logger.info('PLAYER', 'Player connected to framework', { source, playerId, name: GetPlayerName(source) ?? `Player ${source}`, identifier });
 
     const [characters, activeCharacterId] = await Promise.all([
       listCharacters(identifier),
       playerRepository.getActiveCharacterId(identifier),
     ]);
+    emit('rumble:server:characterSelection', source);
     if (characters.length === 0) {
       emitNet('rumble:character:registrationRequired', source, { mode: 'create', firstName: '', lastName: '', minimumAge: Config.minimumCharacterAge });
       return;
@@ -619,7 +644,9 @@ async function persistMetadata(session: PlayerSession, key: string, value: any):
   const serialized = JSON.stringify(value);
   if (serialized.length > Config.maxMetadataBytes) return false;
   session.metadata[key] = value;
+  markDirty(session, 'metadata');
   await metadataRepository.set(session.character.id, key, serialized);
+  session.dirty.delete('metadata');
   if (key === 'deathState') setPlayerState(session.source, 'rumbleDeathState', String(value));
   emit('rumble:server:metadataChanged', session.source, key, value);
   return true;
@@ -856,6 +883,11 @@ function registerRpc(name: string, handler: (source: number, payload: any) => an
   rpcHandlers.set(name, handler);
 }
 
+function registerValidatedRpc(name: string, validator: (payload: any) => boolean, handler: (source: number, payload: any) => any): void {
+  registerRpc(name, handler);
+  rpcValidators.set(name, validator);
+}
+
 function registerTypedRpc<K extends RumbleCallbackName>(
   name: K,
   handler: (source: number, payload: RumbleCallbackRequest<K>) => RumbleCallbackResponse<K> | Promise<RumbleCallbackResponse<K>>,
@@ -868,6 +900,8 @@ function registerRumbleCommand(
   adminOnly: boolean,
   handler: (source: number, args: string[], rawCommand: string) => void | Promise<void>,
 ): void {
+  if (commandRegistry.has(name)) throw new CoreError('COMMAND_DUPLICATE', 'Command is already registered.', { name });
+  commandRegistry.set(name, { adminOnly });
   RegisterCommand(name, (source, args, rawCommand) => {
     if (adminOnly && !requireAdmin(source)) return;
     if (!allowRate(source, `command:${name}`, adminOnly ? 20 : 12, 10000)) {
@@ -889,17 +923,25 @@ async function setMoney(source: number, account: MoneyAccount, amount: number, r
   const previous = session.character[account];
   const finalAmount = Math.floor(amount);
   if (previous === finalAmount) return true;
-  session.character[account] = finalAmount;
-  await characterRepository.updateMoney(session.character.id, session.identifier, account, finalAmount);
-  await moneyRepository.record(
-    session.character.id,
-    account,
-    finalAmount - previous,
-    finalAmount,
-    sanitizeReason(reason),
-    actorIdentifier ?? session.identifier,
-  );
+  const column = account === 'cash' ? 'cash' : 'card';
+  const delta = finalAmount - previous;
+  const safeReason = sanitizeReason(reason);
+  const actor = actorIdentifier ?? session.identifier;
+  const committed = await dbTransaction([
+    {
+      query: `UPDATE rumble_characters SET ${column} = ? WHERE id = ? AND player_identifier = ?`,
+      values: [finalAmount, session.character.id, session.identifier],
+    },
+    {
+      query: `INSERT INTO rumble_money_transactions (character_id, account, amount, balance_after, reason, actor_identifier) VALUES (?, ?, ?, ?, ?, ?)`,
+      values: [session.character.id, account, delta, finalAmount, safeReason, actor],
+    },
+  ]);
+  if (!committed) return false;
 
+  session.character[account] = finalAmount;
+  markDirty(session, 'money');
+  session.dirty.delete('money');
   setPlayerState(source, account === 'cash' ? 'rumbleCash' : 'rumbleCard', finalAmount);
   emitNet('rumble:money:update', source, account, finalAmount, reason);
   emit('rumble:server:moneyChanged', source, account, finalAmount, reason);
@@ -1040,7 +1082,9 @@ on('onResourceStart', (resourceName: string) => {
 });
 
 on('onResourceStop', (resourceName: string) => {
-  if (resourceName !== RESOURCE || !databaseReady) return;
+  if (resourceName !== RESOURCE) return;
+  CoreEvents.clear();
+  if (!databaseReady) return;
   for (const session of sessions.values()) {
     void saveSession(session, true).catch((error) => Logger.error('DATABASE', 'Final save failed', { source: session.source, error: String(error) }));
   }
@@ -1288,14 +1332,39 @@ onNet('rumble:rpc:request', (requestId: string, name: string, payload: any) => {
   const handler = rpcHandlers.get(rpcName);
   if (!handler) {
     rejectSecurity(source, 'unknown_rpc', { rpcName });
-    emitNet('rumble:rpc:response', source, id, false, null, 'RPC necunoscut.');
+    emitNet('rumble:rpc:response', source, id, false, null, 'Unknown RPC.');
     return;
   }
+  const validator = rpcValidators.get(rpcName);
+  if (validator) {
+    let valid = false;
+    try {
+      valid = Boolean(validator(payload));
+    } catch {}
+    if (!valid) {
+      rejectSecurity(source, 'rpc_schema_rejected', { rpcName });
+      emitNet('rumble:rpc:response', source, id, false, null, 'RPC_SCHEMA_REJECTED');
+      return;
+    }
+  }
+  const idempotencyKey = `${source}:${id}`;
+  if (Config.features.idempotentRpc) {
+    const cached = RpcIdempotency.get(idempotencyKey);
+    if (cached) {
+      emitNet('rumble:rpc:response', source, id, cached.success, cached.result, cached.error);
+      return;
+    }
+  }
   void Promise.resolve(handler(source, payload)).then((result) => {
+    if (Config.features.idempotentRpc) RpcIdempotency.set(idempotencyKey, true, result ?? null, null);
+    emit('rumble:telemetry:rpc', { source, rpcName, failed: false });
     emitNet('rumble:rpc:response', source, id, true, result ?? null, null);
   }).catch((error) => {
-    Logger.error('RPC', 'Callback failed', { source, rpcName, error: String(error) });
-    emitNet('rumble:rpc:response', source, id, false, null, 'RPC failed.');
+    const errorCode = error instanceof CoreError ? error.code : 'RPC_FAILED';
+    if (Config.features.idempotentRpc) RpcIdempotency.set(idempotencyKey, false, null, errorCode);
+    emit('rumble:telemetry:rpc', { source, rpcName, failed: true, errorCode });
+    Logger.error('RPC', 'Callback failed', { source, rpcName, error: String(error), errorCode });
+    emitNet('rumble:rpc:response', source, id, false, null, errorCode);
   });
 });
 
@@ -1303,6 +1372,7 @@ on('playerDropped', () => {
   const source = Number((globalThis as any).source);
   const session = sessions.get(source);
   if (session) {
+    activeCharacterOwners.delete(session.character.id);
     refreshRuntimeState(session);
     void saveSession(session, true).catch((error) => Logger.error('DATABASE', 'Could not save dropped player', { source, error: String(error) }));
     void logAction('player', 'disconnected', source, source, { characterId: session.character.id });
@@ -1312,6 +1382,7 @@ on('playerDropped', () => {
   loadingPlayers.delete(source);
   creatingCharacters.delete(source);
   Security.clearSource(source);
+  RpcIdempotency.clearSource(source);
   frozenPlayers.delete(source);
   clearStaticPlayerMapping(source);
 });
@@ -1993,6 +2064,12 @@ exports('RegisterCallback', (name: string, handler: (source: number, payload: an
   return true;
 });
 
+exports('RegisterValidatedCallback', (name: string, validator: (payload: any) => boolean, handler: (source: number, payload: any) => any) => {
+  if (typeof validator !== 'function' || typeof handler !== 'function') return false;
+  registerValidatedRpc(String(name), validator, handler);
+  return true;
+});
+
 exports('RegisterCommand', (name: string, adminOnly: boolean, handler: (source: number, args: string[], rawCommand: string) => void | Promise<void>) => {
   registerRumbleCommand(String(name), Boolean(adminOnly), handler);
   return true;
@@ -2006,5 +2083,41 @@ exports('GetConfig', () => ({
   items: ITEM_DEFINITIONS,
   spawns: SPAWNS,
 }));
+
+exports('GetApiVersion', () => Config.apiVersion);
+exports('GetCapabilities', () => ({
+  apiVersion: Config.apiVersion,
+  version: Config.version,
+  features: { ...Config.features },
+  managers: ['runtime', 'sessions', 'permissions', 'observability', 'gameplay'],
+}));
+exports('GetDiagnostics', () => ({
+  version: Config.version,
+  apiVersion: Config.apiVersion,
+  environment: Config.environment,
+  databaseReady,
+  activeSessions: sessions.size,
+  dirtySessions: Array.from(sessions.values()).filter((session) => session.dirty.size > 0).length,
+  characterLocks: activeCharacterOwners.size,
+  registeredRpc: rpcHandlers.size,
+  validatedRpc: rpcValidators.size,
+  registeredCommands: commandRegistry.size,
+  database: getDatabaseMetrics(),
+  modules: getCoreModules(),
+}));
+exports('RegisterModule', (name: string, version: string) => registerCoreModule(name, version));
+exports('PublishEvent', (name: string, payload?: any) => {
+  const safe = String(name ?? '').trim();
+  if (!/^[a-zA-Z0-9_.:-]{1,96}$/.test(safe)) return false;
+  emit(`rumble:event:${safe}`, payload ?? null);
+  void CoreEvents.emit(safe, payload ?? null);
+  return true;
+});
+exports('GetRegisteredCommands', () => Array.from(commandRegistry.entries()).map(([name, data]) => ({ name, ...data })));
+exports('FlushAllPlayers', async () => {
+  const current = Array.from(sessions.values());
+  await Promise.allSettled(current.map((session) => saveSession(session, true)));
+  return true;
+});
 
 Logger.info('CORE', 'Server script loaded', { resource: RESOURCE, version: Config.version });

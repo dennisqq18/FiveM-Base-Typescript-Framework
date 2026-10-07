@@ -21,6 +21,8 @@ declare function CreateCamWithParams(camName: string, posX: number, posY: number
 declare function DoesCamExist(cam: number): boolean;
 declare function SetCamActive(cam: number, active: boolean): void;
 declare function PointCamAtEntity(cam: number, entity: number, offsetX: number, offsetY: number, offsetZ: number, p5: boolean): void;
+declare function PointCamAtCoord(cam: number, x: number, y: number, z: number): void;
+declare function SetCamCoord(cam: number, x: number, y: number, z: number): void;
 declare function RenderScriptCams(render: boolean, ease: boolean, easeTime: number, p3: boolean, p4: boolean): void;
 declare function DestroyCam(cam: number, thisScriptCheck: boolean): void;
 declare function NetworkResurrectLocalPlayer(x: number, y: number, z: number, heading: number, unk: boolean, changetime: boolean): void;

@@ -45,6 +45,7 @@ async function createFinalSchema(): Promise<void> {
       armor SMALLINT UNSIGNED NOT NULL DEFAULT 0,
       hunger TINYINT UNSIGNED NOT NULL DEFAULT 100,
       thirst TINYINT UNSIGNED NOT NULL DEFAULT 100,
+      revision INT UNSIGNED NOT NULL DEFAULT 0,
       last_played TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -82,6 +83,7 @@ async function createFoundationTables(): Promise<void> {
       target_identifier VARCHAR(96) NULL,
       target_character_id INT UNSIGNED NULL,
       payload LONGTEXT NULL,
+      request_id VARCHAR(96) NULL,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (id),
       KEY idx_rumble_logs_category (category, action),
@@ -206,6 +208,22 @@ async function applyStaticIdMigration(): Promise<void> {
   await migrationRepository.record(3, 'static_player_ids_and_bigint_money');
 }
 
+async function applyBackendRuntimeMigration(): Promise<void> {
+  const checksumColumn = await dbQuery<any[]>("SHOW COLUMNS FROM rumble_migrations LIKE 'checksum'");
+  if (checksumColumn.length === 0) await dbQuery('ALTER TABLE rumble_migrations ADD COLUMN checksum VARCHAR(64) NULL AFTER name');
+
+  const revisionColumn = await dbQuery<any[]>("SHOW COLUMNS FROM rumble_characters LIKE 'revision'");
+  if (revisionColumn.length === 0) await dbQuery('ALTER TABLE rumble_characters ADD COLUMN revision INT UNSIGNED NOT NULL DEFAULT 0 AFTER thirst');
+
+  const requestIdColumn = await dbQuery<any[]>("SHOW COLUMNS FROM rumble_logs LIKE 'request_id'");
+  if (requestIdColumn.length === 0) {
+    await dbQuery('ALTER TABLE rumble_logs ADD COLUMN request_id VARCHAR(96) NULL AFTER payload');
+    await dbQuery('ALTER TABLE rumble_logs ADD KEY idx_rumble_logs_request_id (request_id)');
+  }
+
+  await migrationRepository.record(4, 'backend_runtime_foundation', 'rumble-004-v1');
+}
+
 async function initializeDatabase(): Promise<void> {
   await waitForDatabase();
 
@@ -213,10 +231,14 @@ async function initializeDatabase(): Promise<void> {
     CREATE TABLE IF NOT EXISTS rumble_migrations (
       version INT UNSIGNED NOT NULL,
       name VARCHAR(96) NOT NULL,
+      checksum VARCHAR(64) NULL,
       applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       PRIMARY KEY (version)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `);
+
+  const checksumColumn = await dbQuery<any[]>("SHOW COLUMNS FROM rumble_migrations LIKE 'checksum'");
+  if (checksumColumn.length === 0) await dbQuery('ALTER TABLE rumble_migrations ADD COLUMN checksum VARCHAR(64) NULL AFTER name');
 
   let migration = await migrationRepository.latest();
 
@@ -226,6 +248,8 @@ async function initializeDatabase(): Promise<void> {
     await applyFoundationMigration();
     await applyStaticIdMigration();
     migration = 3;
+    await applyBackendRuntimeMigration();
+    migration = 4;
   } else {
     if (migration < 2) {
       await applyFoundationMigration();
@@ -234,6 +258,10 @@ async function initializeDatabase(): Promise<void> {
     if (migration < 3) {
       await applyStaticIdMigration();
       migration = 3;
+    }
+    if (migration < 4) {
+      await applyBackendRuntimeMigration();
+      migration = 4;
     }
   }
 

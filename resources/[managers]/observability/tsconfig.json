@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "target": "ES2021",
+    "module": "none",
+    "outFile": "dist/server.js",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmitOnError": true,
+    "lib": [
+      "ES2021",
+      "DOM"
+    ],
+    "removeComments": true
+  },
+  "files": [
+    "src/types/fivem-server.d.ts",
+    "src/server.ts"
+  ]
+}

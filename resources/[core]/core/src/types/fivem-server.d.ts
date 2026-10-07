@@ -22,3 +22,5 @@ declare function GetResourceState(resourceName: string): string;
 declare function GetEntityHeading(entity: number): number;
 declare function GetEntityHealth(entity: number): number;
 declare function GetPedArmour(ped: number): number;
+
+declare const performance: { now(): number };

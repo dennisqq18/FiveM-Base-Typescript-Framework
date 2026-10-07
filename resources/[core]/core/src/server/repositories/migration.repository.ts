@@ -3,8 +3,8 @@ class MigrationRepository {
     return Boolean(await dbSingle<any>('SELECT version FROM rumble_migrations WHERE version = ? LIMIT 1', [version]));
   }
 
-  async record(version: number, name: string): Promise<void> {
-    await dbQuery('INSERT IGNORE INTO rumble_migrations (version, name) VALUES (?, ?)', [version, name]);
+  async record(version: number, name: string, checksum: string | null = null): Promise<void> {
+    await dbQuery('INSERT IGNORE INTO rumble_migrations (version, name, checksum) VALUES (?, ?, ?)', [version, name, checksum]);
   }
 
   async latest(): Promise<number> {

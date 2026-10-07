@@ -34,7 +34,13 @@ interface PlayerData {
 
 const clientDelay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 let availableSpawns = new Map<string, Position>();
-let characterPreviewCamera = 0;
+let characterCinematicCamera = 0;
+let characterCinematicTimer: ReturnType<typeof setInterval> | null = null;
+let characterCinematicScene = -1;
+let characterCinematicShot = 0;
+let characterCinematicShotStartedAt = 0;
+let characterCinematicLastFocusAt = 0;
+let lastCharacterCinematicScene = -1;
 let characterSceneToken = 0;
 
 let playerData: PlayerData | null = null;
@@ -78,97 +84,134 @@ async function ensureScreenVisible(): Promise<void> {
   }
 }
 
-function destroyCharacterPreviewCamera(immediate = false): void {
-  if (characterPreviewCamera && DoesCamExist(characterPreviewCamera)) {
-    SetCamActive(characterPreviewCamera, false);
-    RenderScriptCams(false, !immediate, immediate ? 0 : 250, true, true);
-    DestroyCam(characterPreviewCamera, false);
-  }
-  characterPreviewCamera = 0;
+function isCharacterMenuOpen(): boolean {
+  return registrationOpen || selectorOpen || spawnOpen;
 }
 
-async function ensureDefaultCharacterModel(): Promise<number> {
-  const modelName = ClientConfig.characterPreview.model;
-  const model = GetHashKey(modelName);
-  let ped = PlayerPedId();
+function lerp(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
 
-  if (!DoesEntityExist(ped) || GetEntityModel(ped) !== model) {
-    await loadModel(modelName);
-    SetPlayerModel(PlayerId(), model);
-    SetModelAsNoLongerNeeded(model);
-    await clientDelay(0);
-    ped = PlayerPedId();
+function smoothStep(value: number): number {
+  const t = Math.max(0, Math.min(1, value));
+  return t * t * (3 - 2 * t);
+}
+
+function chooseCharacterCinematicScene(): number {
+  const scenes = ClientConfig.characterCinematic.scenes;
+  if (scenes.length <= 1) return 0;
+  let next = Math.floor(Math.random() * scenes.length);
+  if (next === lastCharacterCinematicScene) next = (next + 1 + Math.floor(Math.random() * (scenes.length - 1))) % scenes.length;
+  lastCharacterCinematicScene = next;
+  return next;
+}
+
+function destroyCharacterCinematic(immediate = false): void {
+  if (characterCinematicTimer !== null) {
+    clearInterval(characterCinematicTimer);
+    characterCinematicTimer = null;
   }
+  if (characterCinematicCamera && DoesCamExist(characterCinematicCamera)) {
+    SetCamActive(characterCinematicCamera, false);
+    RenderScriptCams(false, !immediate, immediate ? 0 : 350, true, true);
+    DestroyCam(characterCinematicCamera, false);
+  }
+  characterCinematicCamera = 0;
+  characterCinematicScene = -1;
+  characterCinematicShot = 0;
+  characterCinematicShotStartedAt = 0;
+  characterCinematicLastFocusAt = 0;
+}
 
-  if (!DoesEntityExist(ped)) throw new Error('The default character could not be created.');
-
-  SetPedDefaultComponentVariation(ped);
-  ClearAllPedProps(ped);
-  ClearPedTasksImmediately(ped);
-  ClearPedBloodDamage(ped);
-  ResetPedVisibleDamage(ped);
+function restoreCharacterMenuPed(): void {
+  const ped = PlayerPedId();
+  if (!DoesEntityExist(ped)) return;
   ResetEntityAlpha(ped);
   SetEntityVisible(ped, true, false);
-  return ped;
+  SetEntityInvincible(ped, false);
+  SetEntityCollision(ped, true, true);
+  FreezeEntityPosition(ped, false);
 }
 
-function createCharacterPreviewCamera(ped: number): void {
-  destroyCharacterPreviewCamera(true);
-  const p = ClientConfig.characterPreview.position;
-  const heading = p.heading * Math.PI / 180;
-  const forwardX = -Math.sin(heading);
-  const forwardY = Math.cos(heading);
-  const cameraX = p.x + forwardX * ClientConfig.characterPreview.cameraDistance;
-  const cameraY = p.y + forwardY * ClientConfig.characterPreview.cameraDistance;
-  const cameraZ = p.z + ClientConfig.characterPreview.cameraHeight;
+function hideCharacterMenuPed(): void {
+  const ped = PlayerPedId();
+  if (!DoesEntityExist(ped)) return;
+  SetEntityInvincible(ped, true);
+  SetEntityVisible(ped, false, false);
+  FreezeEntityPosition(ped, true);
+}
 
-  characterPreviewCamera = CreateCamWithParams(
+function startCharacterCinematic(): void {
+  if (characterCinematicCamera && DoesCamExist(characterCinematicCamera)) return;
+  const scenes = ClientConfig.characterCinematic.scenes;
+  if (scenes.length === 0) return;
+
+  characterCinematicScene = chooseCharacterCinematicScene();
+  characterCinematicShot = 0;
+  characterCinematicShotStartedAt = Date.now();
+  characterCinematicLastFocusAt = 0;
+  const shot = scenes[characterCinematicScene].shots[0];
+
+  characterCinematicCamera = CreateCamWithParams(
     'DEFAULT_SCRIPTED_CAMERA',
-    cameraX,
-    cameraY,
-    cameraZ,
+    shot.from.x,
+    shot.from.y,
+    shot.from.z,
     0.0,
     0.0,
     0.0,
-    ClientConfig.characterPreview.cameraFov,
+    ClientConfig.characterCinematic.fov,
     true,
     2,
   );
+  PointCamAtCoord(characterCinematicCamera, shot.lookAt.x, shot.lookAt.y, shot.lookAt.z);
+  SetCamActive(characterCinematicCamera, true);
+  RenderScriptCams(true, true, 500, true, true);
+  SetFocusPosAndVel(shot.from.x, shot.from.y, shot.from.z, 0, 0, 0);
 
-  PointCamAtEntity(characterPreviewCamera, ped, 0.0, 0.0, 0.62, true);
-  SetCamActive(characterPreviewCamera, true);
-  RenderScriptCams(true, true, 250, true, true);
+  characterCinematicTimer = setInterval(() => {
+    if (!isCharacterMenuOpen() || !characterCinematicCamera || !DoesCamExist(characterCinematicCamera)) return;
+    const scene = scenes[characterCinematicScene];
+    const activeShot = scene.shots[characterCinematicShot];
+    const now = Date.now();
+    const duration = Math.max(1000, activeShot.durationMs);
+    const progress = Math.min(1, (now - characterCinematicShotStartedAt) / duration);
+    const t = smoothStep(progress);
+    const x = lerp(activeShot.from.x, activeShot.to.x, t);
+    const y = lerp(activeShot.from.y, activeShot.to.y, t);
+    const z = lerp(activeShot.from.z, activeShot.to.z, t);
+
+    SetCamCoord(characterCinematicCamera, x, y, z);
+    PointCamAtCoord(characterCinematicCamera, activeShot.lookAt.x, activeShot.lookAt.y, activeShot.lookAt.z);
+
+    if (now - characterCinematicLastFocusAt >= ClientConfig.characterCinematic.focusRefreshMs) {
+      characterCinematicLastFocusAt = now;
+      SetFocusPosAndVel(x, y, z, 0, 0, 0);
+    }
+
+    if (progress >= 1) {
+      characterCinematicShot = (characterCinematicShot + 1) % scene.shots.length;
+      characterCinematicShotStartedAt = now;
+    }
+  }, 33);
+}
+
+async function waitForPlayerPed(timeoutMs = 5000): Promise<number> {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    const ped = PlayerPedId();
+    if (DoesEntityExist(ped)) return ped;
+    await clientDelay(50);
+  }
+  throw new Error('Player ped could not be initialized.');
 }
 
 async function prepareCharacterMenuScene(): Promise<void> {
   const token = ++characterSceneToken;
   await ensureScreenVisible();
-
-  const currentPed = PlayerPedId();
-  if (DoesEntityExist(currentPed)) {
-    ResetEntityAlpha(currentPed);
-    SetEntityVisible(currentPed, true, false);
-  }
-
-  const ped = await ensureDefaultCharacterModel();
   if (token !== characterSceneToken) return;
-
-  const p = ClientConfig.characterPreview.position;
-  RequestCollisionAtCoord(p.x, p.y, p.z);
-  SetFocusPosAndVel(p.x, p.y, p.z, 0, 0, 0);
-  SetEntityCoordsNoOffset(ped, p.x, p.y, p.z, false, false, false);
-  SetEntityHeading(ped, p.heading);
-  SetEntityInvincible(ped, true);
-  SetEntityCollision(ped, false, false);
-  SetEntityVisible(ped, true, false);
-  ResetEntityAlpha(ped);
-  FreezeEntityPosition(ped, true);
-  createCharacterPreviewCamera(ped);
-
-  const started = Date.now();
-  while (token === characterSceneToken && !HasCollisionLoadedAroundEntity(ped) && Date.now() - started < ClientConfig.characterSceneCollisionTimeoutMs) {
-    await clientDelay(50);
-  }
+  hideCharacterMenuPed();
+  startCharacterCinematic();
 }
 
 function openRegistration(profile: any = {}): void {
@@ -248,58 +291,49 @@ function closeSpawn(): void {
   refreshNuiFocus();
 }
 
-async function loadModel(modelName: string): Promise<number> {
-  const model = GetHashKey(modelName);
-  RequestModel(model);
-
-  const started = Date.now();
-  while (!HasModelLoaded(model)) {
-    if (Date.now() - started > 10000) {
-      throw new Error(`Model ${modelName} could not be loaded.`);
-    }
-    await clientDelay(0);
-  }
-
-  return model;
-}
-
 async function spawnCharacter(data: PlayerData, position?: Position, spawnId = 'last'): Promise<void> {
   closeRegistration();
   closeSelector();
   closeSpawn();
   characterSceneToken++;
-  destroyCharacterPreviewCamera();
+  destroyCharacterCinematic();
   loaded = false;
   await ensureScreenVisible();
 
-  const model = await loadModel(ClientConfig.characterPreview.model);
-  SetPlayerModel(PlayerId(), model);
-  SetModelAsNoLongerNeeded(model);
-
-  const ped = PlayerPedId();
-  SetPedDefaultComponentVariation(ped);
-  ClearAllPedProps(ped);
-  ResetEntityAlpha(ped);
+  const ped = await waitForPlayerPed();
+  if (!DoesEntityExist(ped)) throw new Error('Player ped does not exist.');
   const p = position ?? data.character.position;
+  const values = [p.x, p.y, p.z, p.heading];
+  if (values.some((value) => !Number.isFinite(value))) throw new Error('Invalid spawn position.');
 
   RequestCollisionAtCoord(p.x, p.y, p.z);
+  SetFocusPosAndVel(p.x, p.y, p.z, 0, 0, 0);
   NetworkResurrectLocalPlayer(p.x, p.y, p.z, p.heading, true, false);
   SetEntityCoordsNoOffset(ped, p.x, p.y, p.z, false, false, false);
   SetEntityHeading(ped, p.heading);
+  ResetEntityAlpha(ped);
   SetEntityVisible(ped, true, false);
   SetEntityCollision(ped, true, true);
   SetEntityHealth(ped, Math.max(100, data.character.health || 200));
   SetPedArmour(ped, Math.max(0, data.character.armor || 0));
   ClearPedTasksImmediately(ped);
   ClearPedBloodDamage(ped);
+  ResetPedVisibleDamage(ped);
   SetEntityInvincible(ped, false);
   FreezeEntityPosition(ped, false);
-  ClearFocus();
 
   const collisionStarted = Date.now();
+  let lastCollisionRequest = 0;
   while (!HasCollisionLoadedAroundEntity(ped) && Date.now() - collisionStarted < ClientConfig.spawnCollisionTimeoutMs) {
+    const now = Date.now();
+    if (now - lastCollisionRequest >= 250) {
+      lastCollisionRequest = now;
+      RequestCollisionAtCoord(p.x, p.y, p.z);
+      SetFocusPosAndVel(p.x, p.y, p.z, 0, 0, 0);
+    }
     await clientDelay(50);
   }
+  ClearFocus();
 
   playerData = data;
   loaded = true;
@@ -318,6 +352,10 @@ onNet('rumble:player:loadError', (text: string) => {
   registrationOpen = false;
   selectorOpen = false;
   spawnOpen = false;
+  characterSceneToken++;
+  destroyCharacterCinematic(true);
+  ClearFocus();
+  restoreCharacterMenuPed();
   refreshNuiFocus();
   void ensureScreenVisible();
   chat(String(text || 'Character loading failed. Check the server console.'), 'error');
@@ -403,6 +441,10 @@ on('__cfx_nui:spawnSelect', (data: any, callback: (response: any) => void) => {
   }
   callback({ accepted: true });
   void spawnCharacter(playerData, position, id).catch((error) => {
+    characterSceneToken++;
+    destroyCharacterCinematic(true);
+    ClearFocus();
+    restoreCharacterMenuPed();
     void ensureScreenVisible();
     console.error('[rumble] Spawn failed', error);
     chat('Could not spawn. Check the F8 console.', 'error');
@@ -1007,7 +1049,7 @@ on('onClientResourceStop', (resourceName: string) => {
   if (resourceName !== GetCurrentResourceName()) return;
   stopFly();
   characterSceneToken++;
-  destroyCharacterPreviewCamera(true);
+  destroyCharacterCinematic(true);
   ClearFocus();
   const ped = PlayerPedId();
   if (DoesEntityExist(ped)) {

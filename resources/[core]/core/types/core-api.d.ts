@@ -48,3 +48,10 @@ declare namespace RumbleAPI {
   type CallbackRequest<K extends CallbackName> = CallbackMap[K]['request'];
   type CallbackResponse<K extends CallbackName> = CallbackMap[K]['response'];
 }
+
+export interface RumbleRuntimeApi {
+  GetApiVersion(): string;
+  GetDiagnostics(): Record<string, any>;
+  GetCapabilities(): Record<string, any>;
+  PublishEvent(name: string, payload?: any): boolean;
+}

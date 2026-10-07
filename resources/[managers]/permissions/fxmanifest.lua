@@ -1,0 +1,7 @@
+fx_version 'cerulean'
+game 'gta5'
+node_version '22'
+author 'Rumble Studios'
+description 'Rumble permissions manager'
+version '0.11.2'
+server_script 'dist/server.js'

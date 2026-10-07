@@ -16,6 +16,7 @@ const CHARACTER_COLUMNS = `
   armor,
   hunger,
   thirst,
+  revision,
   last_played,
   created_at,
   updated_at,
@@ -97,12 +98,12 @@ class CharacterRepository {
     );
   }
 
-  async saveState(characterId: number, identifier: string, data: any): Promise<void> {
-    await dbUpdate(
+  async saveState(characterId: number, identifier: string, version: number, data: any): Promise<boolean> {
+    const changed = await dbUpdate(
       `UPDATE rumble_characters
        SET position_x = ?, position_y = ?, position_z = ?, position_heading = ?,
-           health = ?, armor = ?, hunger = ?, thirst = ?, last_played = CURRENT_TIMESTAMP
-       WHERE id = ? AND player_identifier = ?`,
+           health = ?, armor = ?, hunger = ?, thirst = ?, revision = revision + 1, last_played = CURRENT_TIMESTAMP
+       WHERE id = ? AND player_identifier = ? AND revision = ?`,
       [
         data.position.x,
         data.position.y,
@@ -114,8 +115,10 @@ class CharacterRepository {
         data.thirst,
         characterId,
         identifier,
+        version,
       ],
     );
+    return changed > 0;
   }
 
   async updateIdentity(identifier: string, characterId: number, firstName: string, lastName: string, dateOfBirth: string): Promise<void> {

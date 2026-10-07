@@ -30,19 +30,74 @@ var RumbleShared;
     RumbleShared.vector4 = vector4;
 })(RumbleShared || (RumbleShared = {}));
 const ClientConfig = Object.freeze({
-    characterSceneCollisionTimeoutMs: 2000,
-    spawnCollisionTimeoutMs: 2500,
-    characterPreview: Object.freeze({
-        model: 'mp_m_freemode_01',
-        position: Object.freeze({ x: -1037.72, y: -2737.88, z: 20.17, heading: 329.0 }),
-        cameraDistance: 2.25,
-        cameraHeight: 0.72,
-        cameraFov: 40.0,
-    })
+    spawnCollisionTimeoutMs: 4000,
+    characterCinematic: Object.freeze({
+        fov: 48.0,
+        focusRefreshMs: 500,
+        scenes: Object.freeze([
+            Object.freeze({
+                id: 'los-santos',
+                shots: Object.freeze([
+                    Object.freeze({
+                        from: Object.freeze({ x: -760.0, y: -1150.0, z: 430.0 }),
+                        to: Object.freeze({ x: 520.0, y: -930.0, z: 320.0 }),
+                        lookAt: Object.freeze({ x: 80.0, y: -850.0, z: 70.0 }),
+                        durationMs: 12000,
+                    }),
+                    Object.freeze({
+                        from: Object.freeze({ x: 680.0, y: -180.0, z: 360.0 }),
+                        to: Object.freeze({ x: -520.0, y: 260.0, z: 315.0 }),
+                        lookAt: Object.freeze({ x: -40.0, y: 20.0, z: 85.0 }),
+                        durationMs: 11000,
+                    }),
+                ]),
+            }),
+            Object.freeze({
+                id: 'sandy-shores',
+                shots: Object.freeze([
+                    Object.freeze({
+                        from: Object.freeze({ x: 1120.0, y: 2920.0, z: 300.0 }),
+                        to: Object.freeze({ x: 2050.0, y: 3560.0, z: 255.0 }),
+                        lookAt: Object.freeze({ x: 1700.0, y: 3600.0, z: 55.0 }),
+                        durationMs: 12000,
+                    }),
+                    Object.freeze({
+                        from: Object.freeze({ x: 2050.0, y: 3560.0, z: 255.0 }),
+                        to: Object.freeze({ x: 1350.0, y: 3950.0, z: 285.0 }),
+                        lookAt: Object.freeze({ x: 1650.0, y: 3650.0, z: 50.0 }),
+                        durationMs: 11000,
+                    }),
+                ]),
+            }),
+            Object.freeze({
+                id: 'paleto-bay',
+                shots: Object.freeze([
+                    Object.freeze({
+                        from: Object.freeze({ x: -920.0, y: 6150.0, z: 300.0 }),
+                        to: Object.freeze({ x: 320.0, y: 6570.0, z: 250.0 }),
+                        lookAt: Object.freeze({ x: -80.0, y: 6420.0, z: 55.0 }),
+                        durationMs: 12000,
+                    }),
+                    Object.freeze({
+                        from: Object.freeze({ x: 260.0, y: 6570.0, z: 250.0 }),
+                        to: Object.freeze({ x: -720.0, y: 6350.0, z: 280.0 }),
+                        lookAt: Object.freeze({ x: -120.0, y: 6420.0, z: 50.0 }),
+                        durationMs: 11000,
+                    }),
+                ]),
+            }),
+        ]),
+    }),
 });
 const clientDelay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let availableSpawns = new Map();
-let characterPreviewCamera = 0;
+let characterCinematicCamera = 0;
+let characterCinematicTimer = null;
+let characterCinematicScene = -1;
+let characterCinematicShot = 0;
+let characterCinematicShotStartedAt = 0;
+let characterCinematicLastFocusAt = 0;
+let lastCharacterCinematicScene = -1;
 let characterSceneToken = 0;
 let playerData = null;
 let loaded = false;
@@ -80,76 +135,117 @@ async function ensureScreenVisible() {
         await clientDelay(0);
     }
 }
-function destroyCharacterPreviewCamera(immediate = false) {
-    if (characterPreviewCamera && DoesCamExist(characterPreviewCamera)) {
-        SetCamActive(characterPreviewCamera, false);
-        RenderScriptCams(false, !immediate, immediate ? 0 : 250, true, true);
-        DestroyCam(characterPreviewCamera, false);
-    }
-    characterPreviewCamera = 0;
+function isCharacterMenuOpen() {
+    return registrationOpen || selectorOpen || spawnOpen;
 }
-async function ensureDefaultCharacterModel() {
-    const modelName = ClientConfig.characterPreview.model;
-    const model = GetHashKey(modelName);
-    let ped = PlayerPedId();
-    if (!DoesEntityExist(ped) || GetEntityModel(ped) !== model) {
-        await loadModel(modelName);
-        SetPlayerModel(PlayerId(), model);
-        SetModelAsNoLongerNeeded(model);
-        await clientDelay(0);
-        ped = PlayerPedId();
+function lerp(a, b, t) {
+    return a + (b - a) * t;
+}
+function smoothStep(value) {
+    const t = Math.max(0, Math.min(1, value));
+    return t * t * (3 - 2 * t);
+}
+function chooseCharacterCinematicScene() {
+    const scenes = ClientConfig.characterCinematic.scenes;
+    if (scenes.length <= 1)
+        return 0;
+    let next = Math.floor(Math.random() * scenes.length);
+    if (next === lastCharacterCinematicScene)
+        next = (next + 1 + Math.floor(Math.random() * (scenes.length - 1))) % scenes.length;
+    lastCharacterCinematicScene = next;
+    return next;
+}
+function destroyCharacterCinematic(immediate = false) {
+    if (characterCinematicTimer !== null) {
+        clearInterval(characterCinematicTimer);
+        characterCinematicTimer = null;
     }
+    if (characterCinematicCamera && DoesCamExist(characterCinematicCamera)) {
+        SetCamActive(characterCinematicCamera, false);
+        RenderScriptCams(false, !immediate, immediate ? 0 : 350, true, true);
+        DestroyCam(characterCinematicCamera, false);
+    }
+    characterCinematicCamera = 0;
+    characterCinematicScene = -1;
+    characterCinematicShot = 0;
+    characterCinematicShotStartedAt = 0;
+    characterCinematicLastFocusAt = 0;
+}
+function restoreCharacterMenuPed() {
+    const ped = PlayerPedId();
     if (!DoesEntityExist(ped))
-        throw new Error('The default character could not be created.');
-    SetPedDefaultComponentVariation(ped);
-    ClearAllPedProps(ped);
-    ClearPedTasksImmediately(ped);
-    ClearPedBloodDamage(ped);
-    ResetPedVisibleDamage(ped);
+        return;
     ResetEntityAlpha(ped);
     SetEntityVisible(ped, true, false);
-    return ped;
+    SetEntityInvincible(ped, false);
+    SetEntityCollision(ped, true, true);
+    FreezeEntityPosition(ped, false);
 }
-function createCharacterPreviewCamera(ped) {
-    destroyCharacterPreviewCamera(true);
-    const p = ClientConfig.characterPreview.position;
-    const heading = p.heading * Math.PI / 180;
-    const forwardX = -Math.sin(heading);
-    const forwardY = Math.cos(heading);
-    const cameraX = p.x + forwardX * ClientConfig.characterPreview.cameraDistance;
-    const cameraY = p.y + forwardY * ClientConfig.characterPreview.cameraDistance;
-    const cameraZ = p.z + ClientConfig.characterPreview.cameraHeight;
-    characterPreviewCamera = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA', cameraX, cameraY, cameraZ, 0.0, 0.0, 0.0, ClientConfig.characterPreview.cameraFov, true, 2);
-    PointCamAtEntity(characterPreviewCamera, ped, 0.0, 0.0, 0.62, true);
-    SetCamActive(characterPreviewCamera, true);
-    RenderScriptCams(true, true, 250, true, true);
+function hideCharacterMenuPed() {
+    const ped = PlayerPedId();
+    if (!DoesEntityExist(ped))
+        return;
+    SetEntityInvincible(ped, true);
+    SetEntityVisible(ped, false, false);
+    FreezeEntityPosition(ped, true);
+}
+function startCharacterCinematic() {
+    if (characterCinematicCamera && DoesCamExist(characterCinematicCamera))
+        return;
+    const scenes = ClientConfig.characterCinematic.scenes;
+    if (scenes.length === 0)
+        return;
+    characterCinematicScene = chooseCharacterCinematicScene();
+    characterCinematicShot = 0;
+    characterCinematicShotStartedAt = Date.now();
+    characterCinematicLastFocusAt = 0;
+    const shot = scenes[characterCinematicScene].shots[0];
+    characterCinematicCamera = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA', shot.from.x, shot.from.y, shot.from.z, 0.0, 0.0, 0.0, ClientConfig.characterCinematic.fov, true, 2);
+    PointCamAtCoord(characterCinematicCamera, shot.lookAt.x, shot.lookAt.y, shot.lookAt.z);
+    SetCamActive(characterCinematicCamera, true);
+    RenderScriptCams(true, true, 500, true, true);
+    SetFocusPosAndVel(shot.from.x, shot.from.y, shot.from.z, 0, 0, 0);
+    characterCinematicTimer = setInterval(() => {
+        if (!isCharacterMenuOpen() || !characterCinematicCamera || !DoesCamExist(characterCinematicCamera))
+            return;
+        const scene = scenes[characterCinematicScene];
+        const activeShot = scene.shots[characterCinematicShot];
+        const now = Date.now();
+        const duration = Math.max(1000, activeShot.durationMs);
+        const progress = Math.min(1, (now - characterCinematicShotStartedAt) / duration);
+        const t = smoothStep(progress);
+        const x = lerp(activeShot.from.x, activeShot.to.x, t);
+        const y = lerp(activeShot.from.y, activeShot.to.y, t);
+        const z = lerp(activeShot.from.z, activeShot.to.z, t);
+        SetCamCoord(characterCinematicCamera, x, y, z);
+        PointCamAtCoord(characterCinematicCamera, activeShot.lookAt.x, activeShot.lookAt.y, activeShot.lookAt.z);
+        if (now - characterCinematicLastFocusAt >= ClientConfig.characterCinematic.focusRefreshMs) {
+            characterCinematicLastFocusAt = now;
+            SetFocusPosAndVel(x, y, z, 0, 0, 0);
+        }
+        if (progress >= 1) {
+            characterCinematicShot = (characterCinematicShot + 1) % scene.shots.length;
+            characterCinematicShotStartedAt = now;
+        }
+    }, 33);
+}
+async function waitForPlayerPed(timeoutMs = 5000) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+        const ped = PlayerPedId();
+        if (DoesEntityExist(ped))
+            return ped;
+        await clientDelay(50);
+    }
+    throw new Error('Player ped could not be initialized.');
 }
 async function prepareCharacterMenuScene() {
     const token = ++characterSceneToken;
     await ensureScreenVisible();
-    const currentPed = PlayerPedId();
-    if (DoesEntityExist(currentPed)) {
-        ResetEntityAlpha(currentPed);
-        SetEntityVisible(currentPed, true, false);
-    }
-    const ped = await ensureDefaultCharacterModel();
     if (token !== characterSceneToken)
         return;
-    const p = ClientConfig.characterPreview.position;
-    RequestCollisionAtCoord(p.x, p.y, p.z);
-    SetFocusPosAndVel(p.x, p.y, p.z, 0, 0, 0);
-    SetEntityCoordsNoOffset(ped, p.x, p.y, p.z, false, false, false);
-    SetEntityHeading(ped, p.heading);
-    SetEntityInvincible(ped, true);
-    SetEntityCollision(ped, false, false);
-    SetEntityVisible(ped, true, false);
-    ResetEntityAlpha(ped);
-    FreezeEntityPosition(ped, true);
-    createCharacterPreviewCamera(ped);
-    const started = Date.now();
-    while (token === characterSceneToken && !HasCollisionLoadedAroundEntity(ped) && Date.now() - started < ClientConfig.characterSceneCollisionTimeoutMs) {
-        await clientDelay(50);
-    }
+    hideCharacterMenuPed();
+    startCharacterCinematic();
 }
 function openRegistration(profile = {}) {
     var _a, _b, _c, _d, _e;
@@ -224,51 +320,48 @@ function closeSpawn() {
     SendNuiMessage(JSON.stringify({ type: 'spawn', active: false }));
     refreshNuiFocus();
 }
-async function loadModel(modelName) {
-    const model = GetHashKey(modelName);
-    RequestModel(model);
-    const started = Date.now();
-    while (!HasModelLoaded(model)) {
-        if (Date.now() - started > 10000) {
-            throw new Error(`Model ${modelName} could not be loaded.`);
-        }
-        await clientDelay(0);
-    }
-    return model;
-}
 async function spawnCharacter(data, position, spawnId = 'last') {
     closeRegistration();
     closeSelector();
     closeSpawn();
     characterSceneToken++;
-    destroyCharacterPreviewCamera();
+    destroyCharacterCinematic();
     loaded = false;
     await ensureScreenVisible();
-    const model = await loadModel(ClientConfig.characterPreview.model);
-    SetPlayerModel(PlayerId(), model);
-    SetModelAsNoLongerNeeded(model);
-    const ped = PlayerPedId();
-    SetPedDefaultComponentVariation(ped);
-    ClearAllPedProps(ped);
-    ResetEntityAlpha(ped);
+    const ped = await waitForPlayerPed();
+    if (!DoesEntityExist(ped))
+        throw new Error('Player ped does not exist.');
     const p = position !== null && position !== void 0 ? position : data.character.position;
+    const values = [p.x, p.y, p.z, p.heading];
+    if (values.some((value) => !Number.isFinite(value)))
+        throw new Error('Invalid spawn position.');
     RequestCollisionAtCoord(p.x, p.y, p.z);
+    SetFocusPosAndVel(p.x, p.y, p.z, 0, 0, 0);
     NetworkResurrectLocalPlayer(p.x, p.y, p.z, p.heading, true, false);
     SetEntityCoordsNoOffset(ped, p.x, p.y, p.z, false, false, false);
     SetEntityHeading(ped, p.heading);
+    ResetEntityAlpha(ped);
     SetEntityVisible(ped, true, false);
     SetEntityCollision(ped, true, true);
     SetEntityHealth(ped, Math.max(100, data.character.health || 200));
     SetPedArmour(ped, Math.max(0, data.character.armor || 0));
     ClearPedTasksImmediately(ped);
     ClearPedBloodDamage(ped);
+    ResetPedVisibleDamage(ped);
     SetEntityInvincible(ped, false);
     FreezeEntityPosition(ped, false);
-    ClearFocus();
     const collisionStarted = Date.now();
+    let lastCollisionRequest = 0;
     while (!HasCollisionLoadedAroundEntity(ped) && Date.now() - collisionStarted < ClientConfig.spawnCollisionTimeoutMs) {
+        const now = Date.now();
+        if (now - lastCollisionRequest >= 250) {
+            lastCollisionRequest = now;
+            RequestCollisionAtCoord(p.x, p.y, p.z);
+            SetFocusPosAndVel(p.x, p.y, p.z, 0, 0, 0);
+        }
         await clientDelay(50);
     }
+    ClearFocus();
     playerData = data;
     loaded = true;
     await ensureScreenVisible();
@@ -279,6 +372,10 @@ onNet('rumble:player:loadError', (text) => {
     registrationOpen = false;
     selectorOpen = false;
     spawnOpen = false;
+    characterSceneToken++;
+    destroyCharacterCinematic(true);
+    ClearFocus();
+    restoreCharacterMenuPed();
     refreshNuiFocus();
     void ensureScreenVisible();
     chat(String(text || 'Character loading failed. Check the server console.'), 'error');
@@ -358,6 +455,10 @@ on('__cfx_nui:spawnSelect', (data, callback) => {
     }
     callback({ accepted: true });
     void spawnCharacter(playerData, position, id).catch((error) => {
+        characterSceneToken++;
+        destroyCharacterCinematic(true);
+        ClearFocus();
+        restoreCharacterMenuPed();
         void ensureScreenVisible();
         console.error('[rumble] Spawn failed', error);
         chat('Could not spawn. Check the F8 console.', 'error');
@@ -914,7 +1015,7 @@ on('onClientResourceStop', (resourceName) => {
         return;
     stopFly();
     characterSceneToken++;
-    destroyCharacterPreviewCamera(true);
+    destroyCharacterCinematic(true);
     ClearFocus();
     const ped = PlayerPedId();
     if (DoesEntityExist(ped)) {
