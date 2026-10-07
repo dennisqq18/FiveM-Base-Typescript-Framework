@@ -24,13 +24,13 @@ class SecurityLayer {
     return true;
   }
 
-  validatePayload(payload: any, maximumBytes = Config.maxRpcPayloadBytes): boolean {
+  validatePayload(payload: any, maximumBytes: number = Config.maxRpcPayloadBytes): boolean {
     return serializedSize(payload) <= maximumBytes;
   }
 
   validateMoney(amount: any): boolean {
     const value = Number(amount);
-    return Number.isSafeInteger(value) && value >= 0 && value <= Config.maxMoney;
+    return Number.isSafeInteger(value) && value >= 0;
   }
 
   validateItemAmount(amount: any): boolean {

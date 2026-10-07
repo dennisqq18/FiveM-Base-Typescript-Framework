@@ -31,27 +31,43 @@ var RumbleShared;
 })(RumbleShared || (RumbleShared = {}));
 const Config = Object.freeze({
     frameworkName: 'Rumble',
-    version: '0.8.8',
-    defaultCash: Math.max(0, GetConvarInt('rumble_default_cash', 500)),
-    defaultCard: Math.max(0, GetConvarInt('rumble_default_card', 5000)),
-    maxMoney: Math.max(100000, GetConvarInt('rumble_max_money', 2000000000)),
-    maxCharacters: Math.max(1, GetConvarInt('rumble_max_characters', 5)),
-    minimumCharacterAge: Math.max(18, GetConvarInt('rumble_min_character_age', 18)),
-    autosaveIntervalMs: Math.max(10000, GetConvarInt('rumble_autosave_interval_ms', 30000)),
-    needsIntervalMs: Math.max(10000, GetConvarInt('rumble_needs_interval_ms', 60000)),
-    hungerDecay: Math.max(0, GetConvarInt('rumble_hunger_decay', 1)),
-    thirstDecay: Math.max(0, GetConvarInt('rumble_thirst_decay', 1)),
-    starvationDamage: Math.max(0, GetConvarInt('rumble_starvation_damage', 5)),
-    dehydrationDamage: Math.max(0, GetConvarInt('rumble_dehydration_damage', 5)),
-    inventoryMaxWeight: Math.max(1000, GetConvarInt('rumble_inventory_max_weight', 30000)),
-    inventoryMaxSlots: Math.max(10, GetConvarInt('rumble_inventory_max_slots', 40)),
-    maxItemOperation: Math.max(1, GetConvarInt('rumble_max_item_operation', 1000)),
-    deathDeadAfterMs: Math.max(10000, GetConvarInt('rumble_death_dead_after_ms', 60000)),
+    version: '0.10.4',
+    defaultCash: 500,
+    defaultCard: 5000,
+    maxCharacters: 5,
+    minimumCharacterAge: 18,
+    maintenanceIntervalMs: 60000,
+    hungerDecay: 1,
+    thirstDecay: 1,
+    starvationDamage: 5,
+    dehydrationDamage: 5,
+    inventoryMaxWeight: 30000,
+    inventoryMaxSlots: 40,
+    maxItemOperation: 1000,
+    deathDeadAfterMs: 60000,
+    maxRpcPayloadBytes: 16384,
+    maxMetadataBytes: 16000,
+    securityLogWindowMs: 10000,
+    expectedMigration: 3,
     adminIdentifier: GetConvar('rumble_admin_identifier', '').trim(),
-    maxRpcPayloadBytes: Math.max(1024, GetConvarInt('rumble_max_rpc_payload_bytes', 16384)),
-    maxMetadataBytes: Math.max(1024, GetConvarInt('rumble_max_metadata_bytes', 16000)),
-    securityLogWindowMs: Math.max(1000, GetConvarInt('rumble_security_log_window_ms', 10000)),
-    expectedMigration: 2,
+});
+const DEFAULT_SPAWN = {
+    x: -1037.72,
+    y: -2737.88,
+    z: 20.17,
+    heading: 329.0,
+};
+const SPAWNS = Object.freeze({
+    last: { id: 'last', label: 'Last location' },
+    airport: { id: 'airport', label: 'Airport', position: DEFAULT_SPAWN },
+    legion: { id: 'legion', label: 'Legion Square', position: { x: 215.76, y: -810.12, z: 30.73, heading: 158.0 } },
+    hospital: { id: 'hospital', label: 'Pillbox Hospital', position: { x: 298.18, y: -584.45, z: 43.26, heading: 70.0 } },
+});
+const ITEM_DEFINITIONS = Object.freeze({
+    water: { name: 'water', label: 'Water', weight: 500, stackable: true, usable: true },
+    sandwich: { name: 'sandwich', label: 'Sandwich', weight: 350, stackable: true, usable: true },
+    medkit: { name: 'medkit', label: 'Medkit', weight: 900, stackable: true, usable: true },
+    armor: { name: 'armor', label: 'Body armor', weight: 2500, stackable: true, usable: true },
 });
 class CoreError extends Error {
     constructor(code, message, data = {}) {
@@ -111,7 +127,10 @@ function normalizeDateOfBirth(value) {
     if (value instanceof Date && Number.isFinite(value.getTime()))
         return value.toISOString().slice(0, 10);
     const text = String(value).trim();
-    return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+    const match = text.match(/^(\d{4}-\d{2}-\d{2})/);
+    if (!match)
+        return null;
+    return validateDateOfBirth(match[1]) ? match[1] : null;
 }
 function validateCharacterName(value) {
     return /^[\p{L}'-]{2,24}$/u.test(value);
@@ -235,7 +254,7 @@ class SecurityLayer {
     }
     validateMoney(amount) {
         const value = Number(amount);
-        return Number.isSafeInteger(value) && value >= 0 && value <= Config.maxMoney;
+        return Number.isSafeInteger(value) && value >= 0;
     }
     validateItemAmount(amount) {
         const value = Number(amount);
@@ -287,29 +306,69 @@ class StructuredLogger {
 const Logger = new StructuredLogger();
 class PlayerRepository {
     async upsert(identifier, playerName) {
-        await dbQuery(`INSERT INTO rumble_players (identifier, player_name)
+        return await dbInsert(`INSERT INTO rumble_players (identifier, player_name)
        VALUES (?, ?)
-       ON DUPLICATE KEY UPDATE player_name = VALUES(player_name), last_seen = CURRENT_TIMESTAMP`, [identifier, playerName]);
+       ON DUPLICATE KEY UPDATE
+         player_name = VALUES(player_name),
+         last_seen = CURRENT_TIMESTAMP,
+         player_id = LAST_INSERT_ID(player_id)`, [identifier, playerName]);
     }
-    async get(identifier) {
-        return await dbSingle('SELECT * FROM rumble_players WHERE identifier = ? LIMIT 1', [identifier]);
+    async getActiveCharacterId(identifier) {
+        const row = await dbSingle('SELECT active_character_id FROM rumble_players WHERE identifier = ? LIMIT 1', [identifier]);
+        return Number(row?.active_character_id ?? 0);
     }
     async setActiveCharacter(identifier, characterId) {
         await dbUpdate('UPDATE rumble_players SET active_character_id = ?, last_seen = CURRENT_TIMESTAMP WHERE identifier = ?', [characterId, identifier]);
     }
 }
+const CHARACTER_COLUMNS = `
+  id,
+  player_identifier,
+  citizen_id,
+  slot,
+  first_name,
+  last_name,
+  DATE_FORMAT(date_of_birth, '%Y-%m-%d') AS date_of_birth,
+  cash,
+  card,
+  position_x,
+  position_y,
+  position_z,
+  position_heading,
+  health,
+  armor,
+  hunger,
+  thirst,
+  last_played,
+  created_at,
+  updated_at,
+  deleted_at
+`;
 class CharacterRepository {
     async list(identifier) {
-        return await dbQuery(`SELECT * FROM rumble_characters
+        return await dbQuery(`SELECT ${CHARACTER_COLUMNS}
+       FROM rumble_characters
        WHERE player_identifier = ? AND deleted_at IS NULL
        ORDER BY last_played DESC, slot ASC`, [identifier]);
     }
+    async listSlots(identifier) {
+        const rows = await dbQuery(`SELECT slot
+       FROM rumble_characters
+       WHERE player_identifier = ? AND deleted_at IS NULL
+       ORDER BY slot ASC`, [identifier]);
+        return rows.map((row) => Number(row.slot)).filter((slot) => Number.isInteger(slot) && slot > 0);
+    }
     async getById(identifier, characterId) {
-        return await dbSingle(`SELECT * FROM rumble_characters
-       WHERE id = ? AND player_identifier = ? AND deleted_at IS NULL LIMIT 1`, [characterId, identifier]);
+        return await dbSingle(`SELECT ${CHARACTER_COLUMNS}
+       FROM rumble_characters
+       WHERE id = ? AND player_identifier = ? AND deleted_at IS NULL
+       LIMIT 1`, [characterId, identifier]);
     }
     async getByIdOnly(characterId) {
-        return await dbSingle('SELECT * FROM rumble_characters WHERE id = ? LIMIT 1', [characterId]);
+        return await dbSingle(`SELECT ${CHARACTER_COLUMNS}
+       FROM rumble_characters
+       WHERE id = ?
+       LIMIT 1`, [characterId]);
     }
     async insert(data) {
         return await dbInsert(`INSERT INTO rumble_characters
@@ -457,28 +516,241 @@ class MigrationRepository {
         return Number(row?.version ?? 0);
     }
 }
+async function waitForDatabase() {
+    for (let attempt = 1; attempt <= 30; attempt++) {
+        try {
+            await dbQuery('SELECT 1 AS ok');
+            return;
+        }
+        catch (error) {
+            if (attempt === 30)
+                throw error;
+            Logger.info('DATABASE', 'Waiting for database', { attempt, maximum: 30 });
+            await delay(1000);
+        }
+    }
+}
+async function createFinalSchema() {
+    await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rumble_players (
+      player_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      identifier VARCHAR(96) NOT NULL,
+      player_name VARCHAR(64) NOT NULL,
+      active_character_id INT UNSIGNED NULL,
+      first_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (identifier),
+      UNIQUE KEY uq_rumble_players_player_id (player_id),
+      KEY idx_rumble_players_active_character (active_character_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+    await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rumble_characters (
+      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
+      player_identifier VARCHAR(96) NOT NULL,
+      citizen_id VARCHAR(32) NOT NULL,
+      slot TINYINT UNSIGNED NOT NULL DEFAULT 1,
+      first_name VARCHAR(32) NOT NULL,
+      last_name VARCHAR(32) NOT NULL,
+      date_of_birth DATE NULL,
+      cash BIGINT UNSIGNED NOT NULL DEFAULT 500,
+      card BIGINT UNSIGNED NOT NULL DEFAULT 5000,
+      position_x DECIMAL(11,4) NOT NULL DEFAULT -1037.7200,
+      position_y DECIMAL(11,4) NOT NULL DEFAULT -2737.8800,
+      position_z DECIMAL(11,4) NOT NULL DEFAULT 20.1700,
+      position_heading DECIMAL(7,3) NOT NULL DEFAULT 329.000,
+      health SMALLINT UNSIGNED NOT NULL DEFAULT 200,
+      armor SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+      hunger TINYINT UNSIGNED NOT NULL DEFAULT 100,
+      thirst TINYINT UNSIGNED NOT NULL DEFAULT 100,
+      last_played TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      deleted_at TIMESTAMP NULL DEFAULT NULL,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_rumble_citizen_id (citizen_id),
+      UNIQUE KEY uq_rumble_character_slot (player_identifier, slot),
+      KEY idx_rumble_characters_owner (player_identifier),
+      CONSTRAINT fk_rumble_characters_player FOREIGN KEY (player_identifier) REFERENCES rumble_players(identifier) ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+    await createFoundationTables();
+}
+async function createFoundationTables() {
+    await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rumble_character_metadata (
+      character_id INT UNSIGNED NOT NULL,
+      meta_key VARCHAR(64) NOT NULL,
+      meta_value LONGTEXT NULL,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (character_id, meta_key),
+      CONSTRAINT fk_rumble_metadata_character FOREIGN KEY (character_id) REFERENCES rumble_characters(id) ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+    await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rumble_logs (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      category VARCHAR(48) NOT NULL,
+      action VARCHAR(64) NOT NULL,
+      source_identifier VARCHAR(96) NULL,
+      source_character_id INT UNSIGNED NULL,
+      target_identifier VARCHAR(96) NULL,
+      target_character_id INT UNSIGNED NULL,
+      payload LONGTEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_rumble_logs_category (category, action),
+      KEY idx_rumble_logs_source_character (source_character_id),
+      KEY idx_rumble_logs_target_character (target_character_id),
+      KEY idx_rumble_logs_created (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+    await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rumble_money_transactions (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      character_id INT UNSIGNED NOT NULL,
+      account ENUM('cash','card') NOT NULL,
+      amount BIGINT NOT NULL,
+      balance_after BIGINT UNSIGNED NOT NULL,
+      reason VARCHAR(128) NOT NULL,
+      actor_identifier VARCHAR(96) NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      KEY idx_rumble_money_character (character_id, created_at),
+      CONSTRAINT fk_rumble_money_character FOREIGN KEY (character_id) REFERENCES rumble_characters(id) ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+    await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rumble_inventory (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      character_id INT UNSIGNED NOT NULL,
+      slot SMALLINT UNSIGNED NOT NULL,
+      item_name VARCHAR(64) NOT NULL,
+      amount INT UNSIGNED NOT NULL DEFAULT 1,
+      metadata LONGTEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_rumble_inventory_slot (character_id, slot),
+      KEY idx_rumble_inventory_item (character_id, item_name),
+      CONSTRAINT fk_rumble_inventory_character FOREIGN KEY (character_id) REFERENCES rumble_characters(id) ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+    await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rumble_owned_vehicles (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+      character_id INT UNSIGNED NOT NULL,
+      plate VARCHAR(12) NOT NULL,
+      model VARCHAR(64) NOT NULL,
+      garage VARCHAR(64) NOT NULL DEFAULT 'legion',
+      stored TINYINT(1) NOT NULL DEFAULT 1,
+      fuel DECIMAL(5,2) NOT NULL DEFAULT 100.00,
+      engine_health DECIMAL(8,2) NOT NULL DEFAULT 1000.00,
+      body_health DECIMAL(8,2) NOT NULL DEFAULT 1000.00,
+      properties LONGTEXT NULL,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (id),
+      UNIQUE KEY uq_rumble_vehicle_plate (plate),
+      KEY idx_rumble_vehicle_owner (character_id),
+      CONSTRAINT fk_rumble_vehicle_character FOREIGN KEY (character_id) REFERENCES rumble_characters(id) ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+}
+async function applyFoundationMigration() {
+    const activeCharacterColumn = await dbQuery("SHOW COLUMNS FROM rumble_players LIKE 'active_character_id'");
+    if (activeCharacterColumn.length === 0) {
+        await dbQuery('ALTER TABLE rumble_players ADD COLUMN active_character_id INT UNSIGNED NULL AFTER player_name');
+        await dbQuery('ALTER TABLE rumble_players ADD KEY idx_rumble_players_active_character (active_character_id)');
+    }
+    const updatedAtColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'updated_at'");
+    if (updatedAtColumn.length === 0)
+        await dbQuery('ALTER TABLE rumble_characters ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at');
+    const dateOfBirthColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'date_of_birth'");
+    if (dateOfBirthColumn.length === 0)
+        await dbQuery('ALTER TABLE rumble_characters ADD COLUMN date_of_birth DATE NULL AFTER last_name');
+    const hungerColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'hunger'");
+    if (hungerColumn.length === 0)
+        await dbQuery('ALTER TABLE rumble_characters ADD COLUMN hunger TINYINT UNSIGNED NOT NULL DEFAULT 100 AFTER armor');
+    const thirstColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'thirst'");
+    if (thirstColumn.length === 0)
+        await dbQuery('ALTER TABLE rumble_characters ADD COLUMN thirst TINYINT UNSIGNED NOT NULL DEFAULT 100 AFTER hunger');
+    const cardColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'card'");
+    if (cardColumn.length === 0) {
+        await dbQuery('ALTER TABLE rumble_characters ADD COLUMN card BIGINT UNSIGNED NOT NULL DEFAULT 5000 AFTER cash');
+        const bankColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'bank'");
+        if (bankColumn.length > 0)
+            await dbQuery('UPDATE rumble_characters SET card = bank');
+    }
+    await createFoundationTables();
+    await migrationRepository.record(2, 'framework_foundation');
+}
+async function applyStaticIdMigration() {
+    const playerIdColumns = await dbQuery("SHOW COLUMNS FROM rumble_players LIKE 'player_id'");
+    if (playerIdColumns.length === 0)
+        await dbQuery('ALTER TABLE rumble_players ADD COLUMN player_id BIGINT UNSIGNED NULL AFTER identifier');
+    const currentPlayerIdColumns = playerIdColumns.length > 0 ? playerIdColumns : await dbQuery("SHOW COLUMNS FROM rumble_players LIKE 'player_id'");
+    const isAutoIncrement = String(currentPlayerIdColumns[0]?.Extra ?? '').toLowerCase().includes('auto_increment');
+    if (!isAutoIncrement) {
+        await dbQuery(`
+      UPDATE rumble_players AS player
+      JOIN (
+        SELECT identifier, ROW_NUMBER() OVER (ORDER BY first_seen ASC, identifier ASC) AS permanent_id
+        FROM rumble_players
+      ) AS ranked ON ranked.identifier = player.identifier
+      SET player.player_id = ranked.permanent_id
+    `);
+        const playerIdIndex = await dbQuery("SHOW INDEX FROM rumble_players WHERE Key_name = 'uq_rumble_players_player_id'");
+        if (playerIdIndex.length === 0) {
+            await dbQuery('ALTER TABLE rumble_players MODIFY player_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, ADD UNIQUE KEY uq_rumble_players_player_id (player_id)');
+        }
+        else {
+            await dbQuery('ALTER TABLE rumble_players MODIFY player_id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT');
+        }
+    }
+    await dbQuery('ALTER TABLE rumble_characters MODIFY cash BIGINT UNSIGNED NOT NULL DEFAULT 500, MODIFY card BIGINT UNSIGNED NOT NULL DEFAULT 5000');
+    await dbQuery('ALTER TABLE rumble_money_transactions MODIFY amount BIGINT NOT NULL, MODIFY balance_after BIGINT UNSIGNED NOT NULL');
+    await migrationRepository.record(3, 'static_player_ids_and_bigint_money');
+}
+async function initializeDatabase() {
+    await waitForDatabase();
+    await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rumble_migrations (
+      version INT UNSIGNED NOT NULL,
+      name VARCHAR(96) NOT NULL,
+      applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (version)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+    let migration = await migrationRepository.latest();
+    if (migration === 0) {
+        await createFinalSchema();
+        await migrationRepository.record(1, 'legacy_base');
+        await applyFoundationMigration();
+        await applyStaticIdMigration();
+        migration = 3;
+    }
+    else {
+        if (migration < 2) {
+            await applyFoundationMigration();
+            migration = 2;
+        }
+        if (migration < 3) {
+            await applyStaticIdMigration();
+            migration = 3;
+        }
+    }
+    databaseReady = true;
+    Logger.info('DATABASE', 'Database ready', { migration });
+}
 const RESOURCE = GetCurrentResourceName();
 const MAX_HEALTH = 200;
 const MAX_ARMOR = 100;
-const DEFAULT_SPAWN = {
-    x: -1037.72,
-    y: -2737.88,
-    z: 20.17,
-    heading: 329.0,
-};
-const SPAWNS = {
-    last: { id: 'last', label: 'Last Location' },
-    airport: { id: 'airport', label: 'Airport', position: DEFAULT_SPAWN },
-    legion: { id: 'legion', label: 'Legion Square', position: { x: 215.76, y: -810.12, z: 30.73, heading: 158.0 } },
-    hospital: { id: 'hospital', label: 'Pillbox Hospital', position: { x: 298.18, y: -584.45, z: 43.26, heading: 70.0 } },
-};
-const ITEM_DEFINITIONS = Object.freeze({
-    water: { name: 'water', label: 'Water', weight: 500, stackable: true, usable: true },
-    sandwich: { name: 'sandwich', label: 'Sandwich', weight: 350, stackable: true, usable: true },
-    medkit: { name: 'medkit', label: 'Medkit', weight: 900, stackable: true, usable: true },
-    armor: { name: 'armor', label: 'Body Armor', weight: 2500, stackable: true, usable: true },
-});
 const sessions = new PlayerCache();
+const playerIdBySource = new Map();
+const sourceByPlayerId = new Map();
+const identifierBySource = new Map();
+const adminBySource = new Map();
 const loadingPlayers = new Set();
 const creatingCharacters = new Set();
 const rpcHandlers = new Map();
@@ -505,9 +777,12 @@ function message(source, text, kind = 'info') {
 function isAdmin(source) {
     if (source === 0)
         return true;
-    if (!Config.adminIdentifier || Config.adminIdentifier.includes('PASTE_'))
-        return false;
-    return getPlayerIdentifiers(source).includes(Config.adminIdentifier);
+    const cached = adminBySource.get(source);
+    if (cached !== undefined)
+        return cached;
+    const allowed = Boolean(Config.adminIdentifier && !Config.adminIdentifier.includes('PASTE_') && getPlayerIdentifiers(source).includes(Config.adminIdentifier));
+    adminBySource.set(source, allowed);
+    return allowed;
 }
 function requireAdmin(source) {
     if (isAdmin(source))
@@ -539,6 +814,7 @@ function setPlayerState(source, key, value) {
 function toCharacter(row) {
     return {
         id: Number(row.id),
+        stateId: Number(row.id),
         citizenId: String(row.citizen_id),
         slot: Number(row.slot),
         firstName: String(row.first_name),
@@ -560,6 +836,8 @@ function toCharacter(row) {
 }
 function publicPlayer(session) {
     return {
+        id: session.playerId,
+        playerId: session.playerId,
         source: session.source,
         identifier: session.identifier,
         name: session.playerName,
@@ -583,6 +861,8 @@ function publicMetadata(session) {
 }
 function syncStateBag(session) {
     setPlayerState(session.source, 'rumbleLoaded', session.spawned);
+    setPlayerState(session.source, 'rumblePlayerId', session.playerId);
+    setPlayerState(session.source, 'rumbleStateId', session.character.stateId);
     setPlayerState(session.source, 'rumbleCharacterId', session.character.id);
     setPlayerState(session.source, 'rumbleCitizenId', session.character.citizenId);
     setPlayerState(session.source, 'rumbleCash', session.character.cash);
@@ -598,8 +878,8 @@ async function logAction(category, action, source, target, payload = {}) {
     try {
         const sourceSession = source !== null ? sessions.get(source) : null;
         const targetSession = target !== null ? sessions.get(target) : null;
-        const sourceIdentifier = source === 0 ? 'console' : sourceSession?.identifier ?? (source !== null ? getPrimaryIdentifier(source) : null);
-        const targetIdentifier = targetSession?.identifier ?? (target !== null ? getPrimaryIdentifier(target) : null);
+        const sourceIdentifier = source === 0 ? 'console' : sourceSession?.identifier ?? (source !== null ? getCachedIdentifier(source) : null);
+        const targetIdentifier = targetSession?.identifier ?? (target !== null ? getCachedIdentifier(target) : null);
         await logRepository.insert({
             category,
             action,
@@ -613,18 +893,6 @@ async function logAction(category, action, source, target, payload = {}) {
     catch (error) {
         Logger.error('DATABASE', 'Could not persist structured log', { category, action, error: String(error) });
     }
-}
-async function recordMigration(version, name) {
-    await migrationRepository.record(version, name);
-}
-async function migrationExists(version) {
-    return await migrationRepository.exists(version);
-}
-async function runMigration(version, name, handler) {
-    if (await migrationExists(version))
-        return;
-    await handler();
-    await recordMigration(version, name);
 }
 async function loadMetadata(characterId) {
     const rows = await metadataRepository.list(characterId);
@@ -651,184 +919,6 @@ async function seedStarterItems(characterId) {
         { slot: 2, itemName: 'sandwich', amount: 2, metadata: '{}' },
         { slot: 3, itemName: 'medkit', amount: 1, metadata: '{}' },
     ]);
-}
-async function initializeDatabase() {
-    for (let attempt = 1; attempt <= 30; attempt++) {
-        try {
-            await dbQuery('SELECT 1 AS ok');
-            break;
-        }
-        catch (error) {
-            if (attempt === 30)
-                throw error;
-            Logger.info('DATABASE', 'Waiting for database', { attempt, maximum: 30 });
-            await delay(1000);
-        }
-    }
-    await dbQuery(`
-    CREATE TABLE IF NOT EXISTS rumble_players (
-      identifier VARCHAR(96) NOT NULL,
-      player_name VARCHAR(64) NOT NULL,
-      active_character_id INT UNSIGNED NULL,
-      first_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      PRIMARY KEY (identifier),
-      KEY idx_rumble_players_active_character (active_character_id)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  `);
-    await dbQuery(`
-    CREATE TABLE IF NOT EXISTS rumble_characters (
-      id INT UNSIGNED NOT NULL AUTO_INCREMENT,
-      player_identifier VARCHAR(96) NOT NULL,
-      citizen_id VARCHAR(32) NOT NULL,
-      slot TINYINT UNSIGNED NOT NULL DEFAULT 1,
-      first_name VARCHAR(32) NOT NULL,
-      last_name VARCHAR(32) NOT NULL,
-      date_of_birth DATE NULL,
-      cash INT UNSIGNED NOT NULL DEFAULT 500,
-      card INT UNSIGNED NOT NULL DEFAULT 5000,
-      position_x DECIMAL(11,4) NOT NULL DEFAULT -1037.7200,
-      position_y DECIMAL(11,4) NOT NULL DEFAULT -2737.8800,
-      position_z DECIMAL(11,4) NOT NULL DEFAULT 20.1700,
-      position_heading DECIMAL(7,3) NOT NULL DEFAULT 329.000,
-      health SMALLINT UNSIGNED NOT NULL DEFAULT 200,
-      armor SMALLINT UNSIGNED NOT NULL DEFAULT 0,
-      hunger TINYINT UNSIGNED NOT NULL DEFAULT 100,
-      thirst TINYINT UNSIGNED NOT NULL DEFAULT 100,
-      last_played TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
-      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-      deleted_at TIMESTAMP NULL DEFAULT NULL,
-      PRIMARY KEY (id),
-      UNIQUE KEY uq_rumble_citizen_id (citizen_id),
-      UNIQUE KEY uq_rumble_character_slot (player_identifier, slot),
-      KEY idx_rumble_characters_owner (player_identifier),
-      CONSTRAINT fk_rumble_characters_player
-        FOREIGN KEY (player_identifier) REFERENCES rumble_players(identifier)
-        ON DELETE CASCADE ON UPDATE CASCADE
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  `);
-    const activeCharacterColumn = await dbQuery("SHOW COLUMNS FROM rumble_players LIKE 'active_character_id'");
-    if (activeCharacterColumn.length === 0) {
-        await dbQuery('ALTER TABLE rumble_players ADD COLUMN active_character_id INT UNSIGNED NULL AFTER player_name');
-        await dbQuery('ALTER TABLE rumble_players ADD KEY idx_rumble_players_active_character (active_character_id)');
-    }
-    const updatedAtColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'updated_at'");
-    if (updatedAtColumn.length === 0) {
-        await dbQuery('ALTER TABLE rumble_characters ADD COLUMN updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP AFTER created_at');
-    }
-    const dateOfBirthColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'date_of_birth'");
-    if (dateOfBirthColumn.length === 0) {
-        await dbQuery('ALTER TABLE rumble_characters ADD COLUMN date_of_birth DATE NULL AFTER last_name');
-    }
-    const hungerColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'hunger'");
-    if (hungerColumn.length === 0) {
-        await dbQuery('ALTER TABLE rumble_characters ADD COLUMN hunger TINYINT UNSIGNED NOT NULL DEFAULT 100 AFTER armor');
-    }
-    const thirstColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'thirst'");
-    if (thirstColumn.length === 0) {
-        await dbQuery('ALTER TABLE rumble_characters ADD COLUMN thirst TINYINT UNSIGNED NOT NULL DEFAULT 100 AFTER hunger');
-    }
-    const cardColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'card'");
-    if (cardColumn.length === 0) {
-        await dbQuery('ALTER TABLE rumble_characters ADD COLUMN card INT UNSIGNED NOT NULL DEFAULT 5000 AFTER cash');
-        const bankColumn = await dbQuery("SHOW COLUMNS FROM rumble_characters LIKE 'bank'");
-        if (bankColumn.length > 0) {
-            await dbQuery('UPDATE rumble_characters SET card = bank');
-        }
-    }
-    await dbQuery(`
-    CREATE TABLE IF NOT EXISTS rumble_migrations (
-      version INT UNSIGNED NOT NULL,
-      name VARCHAR(96) NOT NULL,
-      applied_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY (version)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-  `);
-    await recordMigration(1, 'legacy_base');
-    await runMigration(2, 'framework_foundation', async () => {
-        await dbQuery(`
-      CREATE TABLE IF NOT EXISTS rumble_character_metadata (
-        character_id INT UNSIGNED NOT NULL,
-        meta_key VARCHAR(64) NOT NULL,
-        meta_value LONGTEXT NULL,
-        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (character_id, meta_key),
-        CONSTRAINT fk_rumble_metadata_character FOREIGN KEY (character_id) REFERENCES rumble_characters(id) ON DELETE CASCADE ON UPDATE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-        await dbQuery(`
-      CREATE TABLE IF NOT EXISTS rumble_logs (
-        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-        category VARCHAR(48) NOT NULL,
-        action VARCHAR(64) NOT NULL,
-        source_identifier VARCHAR(96) NULL,
-        source_character_id INT UNSIGNED NULL,
-        target_identifier VARCHAR(96) NULL,
-        target_character_id INT UNSIGNED NULL,
-        payload LONGTEXT NULL,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (id),
-        KEY idx_rumble_logs_category (category, action),
-        KEY idx_rumble_logs_source_character (source_character_id),
-        KEY idx_rumble_logs_target_character (target_character_id),
-        KEY idx_rumble_logs_created (created_at)
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-        await dbQuery(`
-      CREATE TABLE IF NOT EXISTS rumble_money_transactions (
-        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-        character_id INT UNSIGNED NOT NULL,
-        account ENUM('cash','card') NOT NULL,
-        amount INT NOT NULL,
-        balance_after INT UNSIGNED NOT NULL,
-        reason VARCHAR(128) NOT NULL,
-        actor_identifier VARCHAR(96) NULL,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        PRIMARY KEY (id),
-        KEY idx_rumble_money_character (character_id, created_at),
-        CONSTRAINT fk_rumble_money_character FOREIGN KEY (character_id) REFERENCES rumble_characters(id) ON DELETE CASCADE ON UPDATE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-        await dbQuery(`
-      CREATE TABLE IF NOT EXISTS rumble_inventory (
-        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-        character_id INT UNSIGNED NOT NULL,
-        slot SMALLINT UNSIGNED NOT NULL,
-        item_name VARCHAR(64) NOT NULL,
-        amount INT UNSIGNED NOT NULL DEFAULT 1,
-        metadata LONGTEXT NULL,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (id),
-        UNIQUE KEY uq_rumble_inventory_slot (character_id, slot),
-        KEY idx_rumble_inventory_item (character_id, item_name),
-        CONSTRAINT fk_rumble_inventory_character FOREIGN KEY (character_id) REFERENCES rumble_characters(id) ON DELETE CASCADE ON UPDATE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-        await dbQuery(`
-      CREATE TABLE IF NOT EXISTS rumble_owned_vehicles (
-        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-        character_id INT UNSIGNED NOT NULL,
-        plate VARCHAR(12) NOT NULL,
-        model VARCHAR(64) NOT NULL,
-        garage VARCHAR(64) NOT NULL DEFAULT 'legion',
-        stored TINYINT(1) NOT NULL DEFAULT 1,
-        fuel DECIMAL(5,2) NOT NULL DEFAULT 100.00,
-        engine_health DECIMAL(8,2) NOT NULL DEFAULT 1000.00,
-        body_health DECIMAL(8,2) NOT NULL DEFAULT 1000.00,
-        properties LONGTEXT NULL,
-        created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-        PRIMARY KEY (id),
-        UNIQUE KEY uq_rumble_vehicle_plate (plate),
-        KEY idx_rumble_vehicle_owner (character_id),
-        CONSTRAINT fk_rumble_vehicle_character FOREIGN KEY (character_id) REFERENCES rumble_characters(id) ON DELETE CASCADE ON UPDATE CASCADE
-      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-    `);
-    });
-    databaseReady = true;
-    Logger.info('DATABASE', 'Database ready');
 }
 async function performHealthCheck() {
     const resourceState = globalThis.GetResourceState;
@@ -873,7 +963,45 @@ async function performHealthCheck() {
     return result;
 }
 async function upsertPlayer(source, identifier) {
-    await playerRepository.upsert(identifier, GetPlayerName(source) ?? `Player ${source}`);
+    const playerId = await playerRepository.upsert(identifier, GetPlayerName(source) ?? `Player ${source}`);
+    const previousSource = sourceByPlayerId.get(playerId);
+    if (previousSource !== undefined && previousSource !== source)
+        playerIdBySource.delete(previousSource);
+    playerIdBySource.set(source, playerId);
+    sourceByPlayerId.set(playerId, source);
+    identifierBySource.set(source, identifier);
+    return playerId;
+}
+function getCachedIdentifier(source) {
+    return sessions.get(source)?.identifier ?? identifierBySource.get(source) ?? getPrimaryIdentifier(source);
+}
+function getStaticPlayerId(source) {
+    return sessions.get(source)?.playerId ?? playerIdBySource.get(source) ?? 0;
+}
+function getSourceByStaticPlayerId(playerId) {
+    if (!Number.isSafeInteger(playerId) || playerId <= 0)
+        return null;
+    const source = sourceByPlayerId.get(playerId);
+    if (source === undefined || !validPlayerSource(source))
+        return null;
+    return source;
+}
+function resolveStaticTarget(value, fallbackSource) {
+    if ((value === undefined || value === null || String(value).trim() === '') && fallbackSource !== undefined) {
+        const playerId = getStaticPlayerId(fallbackSource);
+        return playerId > 0 ? { source: fallbackSource, playerId } : null;
+    }
+    const playerId = Number(value);
+    const source = getSourceByStaticPlayerId(playerId);
+    return source === null ? null : { source, playerId };
+}
+function clearStaticPlayerMapping(source) {
+    const playerId = playerIdBySource.get(source);
+    playerIdBySource.delete(source);
+    identifierBySource.delete(source);
+    adminBySource.delete(source);
+    if (playerId !== undefined && sourceByPlayerId.get(playerId) === source)
+        sourceByPlayerId.delete(playerId);
 }
 function makeCitizenId() {
     const time = Date.now().toString(36).toUpperCase();
@@ -886,6 +1014,7 @@ async function listCharacters(identifier) {
 function characterSummary(character, activeCharacterId = 0) {
     return {
         id: character.id,
+        stateId: character.stateId,
         citizenId: character.citizenId,
         slot: character.slot,
         firstName: character.firstName,
@@ -896,30 +1025,36 @@ function characterSummary(character, activeCharacterId = 0) {
         active: character.id === activeCharacterId,
     };
 }
-async function showCharacterSelector(source, identifier) {
-    const characters = await listCharacters(identifier);
-    const playerRow = await playerRepository.get(identifier);
-    const activeCharacterId = Number(playerRow?.active_character_id ?? 0);
+function sendCharacterSelector(source, characters, activeCharacterId) {
     emitNet('rumble:character:selectorRequired', source, {
         characters: characters.map((character) => characterSummary(character, activeCharacterId)),
         maxCharacters: Config.maxCharacters,
+        playerId: getStaticPlayerId(source),
     });
+}
+async function showCharacterSelector(source, identifier) {
+    const [characters, activeCharacterId] = await Promise.all([
+        listCharacters(identifier),
+        playerRepository.getActiveCharacterId(identifier),
+    ]);
+    sendCharacterSelector(source, characters, activeCharacterId);
 }
 async function createCharacter(identifier, firstName, lastName, dateOfBirth) {
     const maxCharacters = Config.maxCharacters;
-    const existing = await listCharacters(identifier);
-    if (existing.length >= maxCharacters) {
+    const slots = await characterRepository.listSlots(identifier);
+    if (slots.length >= maxCharacters) {
         throw new Error(`You have reached the limit of ${maxCharacters} characters.`);
     }
-    const usedSlots = new Set(existing.map((character) => character.slot));
+    const usedSlots = new Set(slots);
     let slot = 1;
     while (usedSlots.has(slot))
         slot++;
     const defaultCash = Config.defaultCash;
     const defaultCard = Config.defaultCard;
     let insertedId = 0;
+    let citizenId = '';
     for (let attempt = 0; attempt < 5 && !insertedId; attempt++) {
-        const citizenId = makeCitizenId();
+        citizenId = makeCitizenId();
         try {
             insertedId = await characterRepository.insert({
                 identifier,
@@ -947,13 +1082,52 @@ async function createCharacter(identifier, firstName, lastName, dateOfBirth) {
             ? moneyRepository.record(insertedId, 'card', defaultCard, defaultCard, 'character:create', 'system')
             : Promise.resolve(),
     ]);
-    const row = await characterRepository.getByIdOnly(insertedId);
-    if (!row)
-        throw new Error('The character was created but could not be loaded.');
-    return toCharacter(row);
+    return {
+        id: insertedId,
+        stateId: insertedId,
+        citizenId,
+        slot,
+        firstName,
+        lastName,
+        dateOfBirth,
+        cash: defaultCash,
+        card: defaultCard,
+        position: { ...DEFAULT_SPAWN },
+        health: MAX_HEALTH,
+        armor: 0,
+        hunger: 100,
+        thirst: 100,
+    };
 }
 function markDirty(session) {
     session.revision++;
+}
+function refreshRuntimeState(session) {
+    if (!session.spawned)
+        return;
+    const ped = GetPlayerPed(session.source);
+    if (!ped)
+        return;
+    const coords = GetEntityCoords(ped);
+    const heading = Number(globalThis.GetEntityHeading?.(ped) ?? session.character.position.heading);
+    const health = Number(globalThis.GetEntityHealth?.(ped) ?? session.character.health);
+    const armor = Number(globalThis.GetPedArmour?.(ped) ?? session.character.armor);
+    const values = [coords[0], coords[1], coords[2], heading, health, armor];
+    if (values.some((value) => !Number.isFinite(value)))
+        return;
+    const nextPosition = { x: values[0], y: values[1], z: values[2], heading: values[3] };
+    const nextHealth = Math.max(0, Math.min(MAX_HEALTH, Math.floor(values[4])));
+    const nextArmor = Math.max(0, Math.min(MAX_ARMOR, Math.floor(values[5])));
+    const previous = session.character.position;
+    const moved = Math.hypot(nextPosition.x - previous.x, nextPosition.y - previous.y, nextPosition.z - previous.z) >= 0.05;
+    const rotated = Math.abs(nextPosition.heading - previous.heading) >= 0.25;
+    const vitalsChanged = nextHealth !== session.character.health || nextArmor !== session.character.armor;
+    if (!moved && !rotated && !vitalsChanged)
+        return;
+    session.character.position = nextPosition;
+    session.character.health = nextHealth;
+    session.character.armor = nextArmor;
+    markDirty(session);
 }
 async function saveSession(session, force = false) {
     if (!force && session.revision <= session.savedRevision)
@@ -972,6 +1146,8 @@ async function saveSession(session, force = false) {
 async function flushDirtySessions() {
     if (autosaveRunning || !databaseReady || sessions.size === 0)
         return;
+    for (const session of sessions.values())
+        refreshRuntimeState(session);
     const pending = Array.from(sessions.values()).filter((session) => session.revision > session.savedRevision);
     if (pending.length === 0)
         return;
@@ -988,6 +1164,7 @@ async function flushDirtySessions() {
     }
 }
 async function selectCharacter(source, identifier, character) {
+    const playerId = getStaticPlayerId(source) || await upsertPlayer(source, identifier);
     const existing = sessions.get(source);
     if (existing)
         await saveSession(existing, true);
@@ -997,6 +1174,7 @@ async function selectCharacter(source, identifier, character) {
     ]);
     const session = {
         source,
+        playerId,
         identifier,
         playerName: GetPlayerName(source) ?? `Player ${source}`,
         character,
@@ -1019,7 +1197,7 @@ async function selectCharacter(source, identifier, character) {
         spawns: Object.values(SPAWNS),
     });
     emit('rumble:server:characterLoaded', source, publicPlayer(session));
-    Logger.info('PLAYER', 'Character selected', { source, characterId: character.id, citizenId: character.citizenId });
+    Logger.info('PLAYER', 'Character selected', { source, playerId, stateId: character.stateId, citizenId: character.citizenId });
     void logAction('character', 'selected', source, source, { characterId: character.id, citizenId: character.citizenId });
 }
 async function loadPlayer(source) {
@@ -1038,12 +1216,15 @@ async function loadPlayer(source) {
         }
         const identifier = getPrimaryIdentifier(source);
         if (!identifier) {
-            message(source, 'No valid FiveM/license identifier was found.', 'error');
+            message(source, 'Could not find a valid FiveM/license identifier.', 'error');
             return;
         }
-        Logger.info('PLAYER', 'Player connected to framework', { source, name: GetPlayerName(source) ?? `Player ${source}`, identifier });
-        await upsertPlayer(source, identifier);
-        const characters = await listCharacters(identifier);
+        const playerId = await upsertPlayer(source, identifier);
+        Logger.info('PLAYER', 'Player connected to framework', { source, playerId, name: GetPlayerName(source) ?? `Player ${source}`, identifier });
+        const [characters, activeCharacterId] = await Promise.all([
+            listCharacters(identifier),
+            playerRepository.getActiveCharacterId(identifier),
+        ]);
         if (characters.length === 0) {
             emitNet('rumble:character:registrationRequired', source, { mode: 'create', firstName: '', lastName: '', minimumAge: Config.minimumCharacterAge });
             return;
@@ -1061,7 +1242,7 @@ async function loadPlayer(source) {
         }
         if (!GetPlayerName(source))
             return;
-        await showCharacterSelector(source, identifier);
+        sendCharacterSelector(source, characters, activeCharacterId);
     }
     finally {
         loadingPlayers.delete(source);
@@ -1341,7 +1522,7 @@ async function setMoney(source, account, amount, reason = 'unknown', actorIdenti
     if (!session || !Security.validateMoney(amount))
         return false;
     const previous = session.character[account];
-    const finalAmount = clampNumber(Math.floor(amount), 0, Config.maxMoney);
+    const finalAmount = Math.floor(amount);
     if (previous === finalAmount)
         return true;
     session.character[account] = finalAmount;
@@ -1458,12 +1639,10 @@ function tickNeeds() {
             emitNet('rumble:needs:damage', source, damage);
     }
 }
-const needsInterval = Config.needsIntervalMs;
-const autosaveInterval = Config.autosaveIntervalMs;
-setInterval(tickNeeds, needsInterval);
 setInterval(() => {
+    tickNeeds();
     void flushDirtySessions();
-}, autosaveInterval);
+}, Config.maintenanceIntervalMs);
 on('onResourceStart', (resourceName) => {
     if (resourceName !== RESOURCE)
         return;
@@ -1513,9 +1692,9 @@ onNet('rumble:character:createInitial', (payload) => {
             emitNet('rumble:character:registrationError', source, 'The database is unavailable.');
             return;
         }
-        const identifier = getPrimaryIdentifier(source);
+        const identifier = getCachedIdentifier(source);
         if (!identifier) {
-            emitNet('rumble:character:registrationError', source, 'No valid FiveM identifier was found.');
+            emitNet('rumble:character:registrationError', source, 'Could not find a valid FiveM identifier.');
             return;
         }
         const firstName = String(payload?.firstName ?? '').trim();
@@ -1523,15 +1702,15 @@ onNet('rumble:character:createInitial', (payload) => {
         const dateOfBirth = String(payload?.dateOfBirth ?? '').trim();
         const mode = String(payload?.mode ?? 'create');
         if (!validateCharacterName(firstName)) {
-            emitNet('rumble:character:registrationError', source, 'The first name must contain between 2 and 24 letters.');
+            emitNet('rumble:character:registrationError', source, 'First name must contain between 2 and 24 letters.');
             return;
         }
         if (!validateCharacterName(lastName)) {
-            emitNet('rumble:character:registrationError', source, 'The last name must contain between 2 and 24 letters.');
+            emitNet('rumble:character:registrationError', source, 'Last name must contain between 2 and 24 letters.');
             return;
         }
         if (!validateDateOfBirth(dateOfBirth)) {
-            emitNet('rumble:character:registrationError', source, 'The date of birth is invalid.');
+            emitNet('rumble:character:registrationError', source, 'Date of birth is invalid.');
             return;
         }
         if (!isAtLeastAge(dateOfBirth, Config.minimumCharacterAge)) {
@@ -1547,18 +1726,20 @@ onNet('rumble:character:createInitial', (payload) => {
                 return;
             }
             await characterRepository.updateIdentity(identifier, characterId, firstName, lastName, dateOfBirth);
+            Logger.info('CHARACTER', 'Character identity updated', { source, characterId, dateOfBirth });
             await showCharacterSelector(source, identifier);
-            await logAction('character', 'identity_completed', source, source, { characterId });
+            void logAction('character', 'identity_completed', source, source, { characterId, dateOfBirth });
             return;
         }
         const character = await createCharacter(identifier, firstName, lastName, dateOfBirth);
-        await logAction('character', 'created', source, source, { characterId: character.id, citizenId: character.citizenId });
+        Logger.info('CHARACTER', 'Character created', { source, characterId: character.id, citizenId: character.citizenId, dateOfBirth: character.dateOfBirth });
+        void logAction('character', 'created', source, source, { characterId: character.id, citizenId: character.citizenId, dateOfBirth: character.dateOfBirth });
         if (!GetPlayerName(source))
             return;
-        await selectCharacter(source, identifier, character);
+        await showCharacterSelector(source, identifier);
     })().catch((error) => {
         Logger.error('CHARACTER', 'Character creation failed', { source, error: String(error) });
-        emitNet('rumble:character:registrationError', source, error instanceof Error ? error.message : 'The character could not be created.');
+        emitNet('rumble:character:registrationError', source, error instanceof Error ? error.message : 'Could not create the character.');
     }).finally(() => {
         creatingCharacters.delete(source);
     });
@@ -1568,7 +1749,7 @@ onNet('rumble:character:select', (characterId) => {
     if (source <= 0 || !allowRate(source, 'character:select', 5, 5000))
         return;
     void (async () => {
-        const identifier = getPrimaryIdentifier(source);
+        const identifier = getCachedIdentifier(source);
         if (!identifier)
             return;
         const id = Number(characterId);
@@ -1593,7 +1774,7 @@ onNet('rumble:character:select', (characterId) => {
         await selectCharacter(source, identifier, character);
     })().catch((error) => {
         Logger.error('CHARACTER', 'Character selection failed', { source, error: String(error) });
-        emitNet('rumble:character:selectorError', source, 'The character could not be selected.');
+        emitNet('rumble:character:selectorError', source, 'Could not select the character.');
     });
 });
 onNet('rumble:player:spawned', (spawnId) => {
@@ -1642,14 +1823,23 @@ onNet('rumble:player:updateState', () => {
     const values = [coords[0], coords[1], coords[2], heading, health, armor];
     if (values.some((value) => !Number.isFinite(value)))
         return;
-    session.character.position = {
+    const nextPosition = {
         x: values[0],
         y: values[1],
         z: values[2],
         heading: values[3],
     };
-    session.character.health = Math.max(0, Math.min(MAX_HEALTH, Math.floor(values[4])));
-    session.character.armor = Math.max(0, Math.min(MAX_ARMOR, Math.floor(values[5])));
+    const nextHealth = Math.max(0, Math.min(MAX_HEALTH, Math.floor(values[4])));
+    const nextArmor = Math.max(0, Math.min(MAX_ARMOR, Math.floor(values[5])));
+    const previous = session.character.position;
+    const moved = Math.hypot(nextPosition.x - previous.x, nextPosition.y - previous.y, nextPosition.z - previous.z) >= 0.05;
+    const rotated = Math.abs(nextPosition.heading - previous.heading) >= 0.25;
+    const vitalsChanged = nextHealth !== session.character.health || nextArmor !== session.character.armor;
+    if (!moved && !rotated && !vitalsChanged)
+        return;
+    session.character.position = nextPosition;
+    session.character.health = nextHealth;
+    session.character.armor = nextArmor;
     markDirty(session);
 });
 onNet('rumble:death:update', (stateInput) => {
@@ -1719,6 +1909,7 @@ on('playerDropped', () => {
     const source = Number(globalThis.source);
     const session = sessions.get(source);
     if (session) {
+        refreshRuntimeState(session);
         void saveSession(session, true).catch((error) => Logger.error('DATABASE', 'Could not save dropped player', { source, error: String(error) }));
         void logAction('player', 'disconnected', source, source, { characterId: session.character.id });
         emit('rumble:server:playerUnloaded', source, publicPlayer(session));
@@ -1728,6 +1919,7 @@ on('playerDropped', () => {
     creatingCharacters.delete(source);
     Security.clearSource(source);
     frozenPlayers.delete(source);
+    clearStaticPlayerMapping(source);
 });
 registerTypedRpc('rumble:getPlayer', (source) => {
     const session = sessions.get(source);
@@ -1755,9 +1947,9 @@ registerRumbleCommand('inv', false, async (source) => {
         return;
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     if (session.inventory.length === 0)
-        return message(source, 'Your inventory is empty.', 'info');
+        return message(source, 'Inventory is empty.', 'info');
     message(source, `Inventory ${inventoryWeight(session)}/${Config.inventoryMaxWeight}g:`, 'info');
     for (const item of session.inventory) {
         const definition = ITEM_DEFINITIONS[item.name];
@@ -1775,17 +1967,17 @@ registerRumbleCommand('use', false, async (source, args) => {
         message(source, 'The item does not exist, you do not have it, or it cannot be used.', 'error');
 });
 registerRumbleCommand('giveitem', true, async (source, args) => {
-    const target = Number(args[0]);
+    const target = resolveStaticTarget(args[0]);
     const itemName = String(args[1] ?? '').trim().toLowerCase();
     const amount = Math.floor(Number(args[2] ?? 1));
-    if (!validPlayerSource(target) || !ITEM_DEFINITIONS[itemName] || !Security.validateItemAmount(amount)) {
+    if (!target || !ITEM_DEFINITIONS[itemName] || !Security.validateItemAmount(amount)) {
         if (source !== 0)
-            message(source, 'Usage: /giveitem [id] [water|sandwich|medkit|armor] [amount].', 'error');
+            message(source, 'Usage: /giveitem [permanent-id] [water|sandwich|medkit|armor] [amount].', 'error');
         return;
     }
-    const ok = await addItem(target, itemName, amount, {}, `admin:${source}`);
+    const ok = await addItem(target.source, itemName, amount, {}, `admin:${source}`);
     if (source !== 0)
-        message(source, ok ? 'The item was added.' : 'The item could not be added.', ok ? 'success' : 'error');
+        message(source, ok ? `Item added for ID ${target.playerId}.` : 'Could not add the item.', ok ? 'success' : 'error');
 });
 registerRumbleCommand('vehicles', false, async (source) => {
     if (source === 0)
@@ -1794,27 +1986,27 @@ registerRumbleCommand('vehicles', false, async (source) => {
     if (vehicles.length === 0)
         return message(source, 'You do not have any owned vehicles.', 'info');
     for (const vehicle of vehicles)
-        message(source, `${vehicle.plate} | ${vehicle.model} | ${vehicle.garage} | ${vehicle.stored ? 'stored' : 'out'}`, 'info');
+        message(source, `${vehicle.plate} | ${vehicle.model} | ${vehicle.garage} | ${vehicle.stored ? 'stored' : 'outside'}`, 'info');
 });
 registerRumbleCommand('addvehicle', true, async (source, args) => {
-    const target = Number(args[0]);
+    const target = resolveStaticTarget(args[0]);
     const model = String(args[1] ?? '').trim();
     const plate = String(args[2] ?? '').trim();
-    if (!Number.isInteger(target) || !model) {
+    if (!target || !model) {
         if (source !== 0)
-            message(source, 'Usage: /addvehicle [id] [model] [optional-plate].', 'error');
+            message(source, 'Usage: /addvehicle [permanent-id] [model] [optional-plate].', 'error');
         return;
     }
-    const vehicle = await addOwnedVehicle(target, model, plate);
+    const vehicle = await addOwnedVehicle(target.source, model, plate);
     if (source !== 0)
-        message(source, vehicle ? `Vehicle added: ${vehicle.model} ${vehicle.plate}.` : 'The vehicle could not be added.', vehicle ? 'success' : 'error');
+        message(source, vehicle ? `Vehicle added for ID ${target.playerId}: ${vehicle.model} ${vehicle.plate}.` : 'Could not add the vehicle.', vehicle ? 'success' : 'error');
 });
 registerRumbleCommand('respawn', false, async (source) => {
     if (source === 0)
         return;
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     const deathState = String(session.metadata.deathState ?? 'alive');
     if (deathState !== 'dead')
         return message(source, 'You can use /respawn only after your state becomes dead.', 'error');
@@ -1832,12 +2024,20 @@ registerRumbleCommand('characters', false, async (source) => {
         await saveSession(session, true);
     await showCharacterSelector(source, identifier);
 });
+RegisterCommand('id', (source) => {
+    if (source === 0)
+        return;
+    const session = sessions.get(source);
+    if (!session)
+        return message(source, 'Your player data is not loaded yet.', 'error');
+    message(source, `Permanent ID: ${session.playerId} | State ID: ${session.character.stateId}`, 'info');
+}, false);
 RegisterCommand('money', (source) => {
     if (source === 0)
         return;
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     message(source, `Cash: $${session.character.cash.toLocaleString()} | Card: $${session.character.card.toLocaleString()}`, 'info');
 }, false);
 RegisterCommand('cash', (source) => {
@@ -1845,7 +2045,7 @@ RegisterCommand('cash', (source) => {
         return;
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     message(source, `Cash: $${session.character.cash.toLocaleString()}`, 'info');
 }, false);
 RegisterCommand('card', (source) => {
@@ -1853,7 +2053,7 @@ RegisterCommand('card', (source) => {
         return;
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     message(source, `Card: $${session.character.card.toLocaleString()}`, 'info');
 }, false);
 RegisterCommand('stats', (source) => {
@@ -1861,7 +2061,7 @@ RegisterCommand('stats', (source) => {
         return;
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     message(source, `Hunger: ${session.character.hunger}% | Thirst: ${session.character.thirst}% | Health: ${session.character.health} | Armor: ${session.character.armor}%`, 'info');
 }, false);
 RegisterCommand('fullstats', (source) => {
@@ -1870,7 +2070,7 @@ RegisterCommand('fullstats', (source) => {
     void logAction('admin', 'command:fullstats', source, source, {});
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     void (async () => {
         session.character.health = MAX_HEALTH;
         session.character.armor = MAX_ARMOR;
@@ -1879,10 +2079,10 @@ RegisterCommand('fullstats', (source) => {
         await persistMetadata(session, 'deathState', 'alive');
         await saveSession(session, true);
         emitNet('rumble:admin:fullStats', source);
-        message(source, 'Hunger, thirst, health, and armor have been fully restored.', 'success');
+        message(source, 'Hunger, thirst, health, and armor were fully restored.', 'success');
     })().catch((error) => {
         console.error(error);
-        message(source, 'The stats could not be restored.', 'error');
+        message(source, 'Could not restore all stats.', 'error');
     });
 }, false);
 RegisterCommand('hunger', (source) => {
@@ -1891,14 +2091,14 @@ RegisterCommand('hunger', (source) => {
     void logAction('admin', 'command:hunger', source, source, {});
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     void (async () => {
         await setNeed(source, 'hunger', 100, `hunger:${source}`);
         await saveSession(session, true);
         message(source, 'Hunger was set to 100%.', 'success');
     })().catch((error) => {
         console.error(error);
-        message(source, 'Hunger could not be restored.', 'error');
+        message(source, 'Could not set hunger to maximum.', 'error');
     });
 }, false);
 RegisterCommand('water', (source) => {
@@ -1907,14 +2107,14 @@ RegisterCommand('water', (source) => {
     void logAction('admin', 'command:water', source, source, {});
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     void (async () => {
         await setNeed(source, 'thirst', 100, `water:${source}`);
         await saveSession(session, true);
         message(source, 'Thirst was set to 100%.', 'success');
     })().catch((error) => {
         console.error(error);
-        message(source, 'Thirst could not be restored.', 'error');
+        message(source, 'Could not set thirst to maximum.', 'error');
     });
 }, false);
 RegisterCommand('health', (source) => {
@@ -1923,14 +2123,14 @@ RegisterCommand('health', (source) => {
     void logAction('admin', 'command:health', source, source, {});
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     void (async () => {
         await setVital(source, 'health', MAX_HEALTH, `health:${source}`);
         await saveSession(session, true);
-        message(source, 'Health was fully restored.', 'success');
+        message(source, 'Health was set to maximum.', 'success');
     })().catch((error) => {
         console.error(error);
-        message(source, 'Health could not be restored.', 'error');
+        message(source, 'Could not set health to maximum.', 'error');
     });
 }, false);
 RegisterCommand('armor', (source) => {
@@ -1939,14 +2139,14 @@ RegisterCommand('armor', (source) => {
     void logAction('admin', 'command:armor', source, source, {});
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     void (async () => {
         await setVital(source, 'armor', MAX_ARMOR, `armor:${source}`);
         await saveSession(session, true);
         message(source, 'Armor was set to 100%.', 'success');
     })().catch((error) => {
         console.error(error);
-        message(source, 'Armor could not be restored.', 'error');
+        message(source, 'Could not set armor to maximum.', 'error');
     });
 }, false);
 RegisterCommand('chars', (source) => {
@@ -1954,12 +2154,12 @@ RegisterCommand('chars', (source) => {
         return;
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     void listCharacters(session.identifier).then((characters) => {
         message(source, `Characters (${characters.length}):`, 'info');
         for (const character of characters) {
             const active = character.id === session.character.id ? ' ^2[ACTIV]^7' : '';
-            message(source, `#${character.id} | slot ${character.slot} | ${character.firstName} ${character.lastName}${active}`, 'info');
+            message(source, `State ID ${character.stateId} | slot ${character.slot} | ${character.firstName} ${character.lastName}${active}`, 'info');
         }
     }).catch((error) => console.error(error));
 }, false);
@@ -1968,7 +2168,7 @@ RegisterCommand('newchar', (source, args) => {
         return;
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     const firstName = String(args[0] ?? '').trim();
     const lastName = String(args[1] ?? '').trim();
     const dateOfBirth = String(args[2] ?? '').trim();
@@ -1983,17 +2183,17 @@ RegisterCommand('newchar', (source, args) => {
         const character = await createCharacter(session.identifier, firstName, lastName, dateOfBirth);
         await selectCharacter(source, session.identifier, character);
         message(source, `Character created: ${firstName} ${lastName}.`, 'success');
-    })().catch((error) => message(source, error instanceof Error ? error.message : 'The character could not be created.', 'error'));
+    })().catch((error) => message(source, error instanceof Error ? error.message : 'Could not create the character.', 'error'));
 }, false);
 RegisterCommand('switchchar', (source, args) => {
     if (source === 0)
         return;
     const session = sessions.get(source);
     if (!session)
-        return message(source, 'Your player data has not loaded yet.', 'error');
+        return message(source, 'Your player data is not loaded yet.', 'error');
     const id = Number(args[0]);
     if (!Number.isInteger(id) || id <= 0) {
-        return message(source, 'Usage: /switchchar ID. See /chars.', 'error');
+        return message(source, 'Usage: /switchchar StateID. See /chars.', 'error');
     }
     void (async () => {
         const row = await characterRepository.getById(session.identifier, id);
@@ -2001,27 +2201,27 @@ RegisterCommand('switchchar', (source, args) => {
             return message(source, 'The character does not belong to you or does not exist.', 'error');
         await saveSession(session, true);
         await selectCharacter(source, session.identifier, toCharacter(row));
-        message(source, `Switched to character #${id}.`, 'success');
+        message(source, `Switched to the character with State ID ${id}.`, 'success');
     })().catch((error) => {
         console.error(error);
-        message(source, 'The character could not be switched.', 'error');
+        message(source, 'Could not switch character.', 'error');
     });
 }, false);
 RegisterCommand('setmoney', (source, args) => {
     if (!requireAdmin(source))
         return;
     void logAction('admin', 'command:setmoney', source, null, { args });
-    const target = Number(args[0]);
+    const target = resolveStaticTarget(args[0]);
     const account = args[1];
     const amount = Number(args[2]);
-    if (!validPlayerSource(target) || (account !== 'cash' && account !== 'card') || !Security.validateMoney(amount)) {
+    if (!target || (account !== 'cash' && account !== 'card') || !Security.validateMoney(amount)) {
         if (source !== 0)
-            message(source, 'Usage: /setmoney [id] [cash|card] [amount]', 'error');
+            message(source, 'Usage: /setmoney [permanent-id] [cash|card] [amount]', 'error');
         return;
     }
-    void setMoney(target, account, amount, `admin:${source}`, source === 0 ? 'console' : getPrimaryIdentifier(source) ?? `source:${source}`).then((ok) => {
+    void setMoney(target.source, account, amount, `admin:${source}`, source === 0 ? 'console' : getPrimaryIdentifier(source) ?? `source:${source}`).then((ok) => {
         if (source !== 0)
-            message(source, ok ? 'The balance was updated.' : 'The player is not loaded.', ok ? 'success' : 'error');
+            message(source, ok ? `Money was updated for ID ${target.playerId}.` : 'The player is not loaded.', ok ? 'success' : 'error');
     });
 }, false);
 RegisterCommand('ara', (source) => {
@@ -2030,7 +2230,7 @@ RegisterCommand('ara', (source) => {
     void logAction('admin', 'command:ara', source, null, {});
     const callerPed = GetPlayerPed(source);
     if (!callerPed)
-        return message(source, 'Your ped is unavailable.', 'error');
+        return message(source, 'Your ped is not available.', 'error');
     const [cx, cy, cz] = GetEntityCoords(callerPed);
     let revived = 0;
     for (const targetString of getPlayers()) {
@@ -2053,7 +2253,7 @@ RegisterCommand('ara', (source) => {
             revived++;
         }
     }
-    message(source, `Revive sent to ${revived} player(s) within 10m, including you.`, 'success');
+    message(source, `Revive sent to ${revived} player(s) within 10m, including yourself.`, 'success');
 }, false);
 RegisterCommand('fly', (source) => {
     if (source === 0 || !requireAdmin(source))
@@ -2100,33 +2300,33 @@ registerRumbleCommand('tp', true, async (source, args) => {
 registerRumbleCommand('bring', true, async (source, args) => {
     if (source === 0)
         return;
-    const target = Number(args[0]);
-    if (!validPlayerSource(target))
-        return message(source, 'Usage: /bring [id].', 'error');
+    const target = resolveStaticTarget(args[0]);
+    if (!target)
+        return message(source, 'Usage: /bring [permanent-id].', 'error');
     const position = getServerPosition(source);
     if (!position)
         return message(source, 'Your position is unavailable.', 'error');
-    emitNet('rumble:admin:teleport', target, position);
-    message(source, `Player ${target} was brought to you.`, 'success');
+    emitNet('rumble:admin:teleport', target.source, position);
+    message(source, `Player ID ${target.playerId} was brought to you.`, 'success');
 });
 registerRumbleCommand('goto', true, async (source, args) => {
     if (source === 0)
         return;
-    const target = Number(args[0]);
-    if (!validPlayerSource(target))
-        return message(source, 'Usage: /goto [id].', 'error');
-    const position = getServerPosition(target);
+    const target = resolveStaticTarget(args[0]);
+    if (!target)
+        return message(source, 'Usage: /goto [permanent-id].', 'error');
+    const position = getServerPosition(target.source);
     if (!position)
-        return message(source, 'The player position is unavailable.', 'error');
+        return message(source, "The player's position is unavailable.", 'error');
     emitNet('rumble:admin:teleport', source, position);
-    message(source, `Teleported to player ${target}.`, 'success');
+    message(source, `You were teleported to player ID ${target.playerId}.`, 'success');
 });
 registerRumbleCommand('coords', true, async (source) => {
     if (source === 0)
         return;
     const position = getServerPosition(source);
     if (!position)
-        return message(source, 'The position is unavailable.', 'error');
+        return message(source, 'Position is unavailable.', 'error');
     message(source, `x=${position.x.toFixed(4)} y=${position.y.toFixed(4)} z=${position.z.toFixed(4)}`, 'info');
 });
 registerRumbleCommand('heading', true, async (source) => {
@@ -2134,7 +2334,7 @@ registerRumbleCommand('heading', true, async (source) => {
         return;
     const position = getServerPosition(source);
     if (!position)
-        return message(source, 'The heading is unavailable.', 'error');
+        return message(source, 'Heading is unavailable.', 'error');
     message(source, `heading=${position.heading.toFixed(3)}`, 'info');
 });
 registerRumbleCommand('pos', true, async (source) => {
@@ -2142,7 +2342,7 @@ registerRumbleCommand('pos', true, async (source) => {
         return;
     const position = getServerPosition(source);
     if (!position)
-        return message(source, 'The position is unavailable.', 'error');
+        return message(source, 'Position is unavailable.', 'error');
     message(source, `vector4(${position.x.toFixed(4)}, ${position.y.toFixed(4)}, ${position.z.toFixed(4)}, ${position.heading.toFixed(3)})`, 'info');
 });
 registerRumbleCommand('vehicle', true, async (source, args) => {
@@ -2162,46 +2362,46 @@ registerRumbleCommand('dv', true, async (source, args) => {
     emitNet('rumble:admin:deleteVehicle', source, radius);
 });
 registerRumbleCommand('freeze', true, async (source, args) => {
-    const target = Number(args[0]);
-    if (!validPlayerSource(target)) {
+    const target = resolveStaticTarget(args[0]);
+    if (!target) {
         if (source !== 0)
-            message(source, 'Usage: /freeze [id].', 'error');
+            message(source, 'Usage: /freeze [permanent-id].', 'error');
         return;
     }
-    const enabled = !frozenPlayers.has(target);
+    const enabled = !frozenPlayers.has(target.source);
     if (enabled)
-        frozenPlayers.add(target);
+        frozenPlayers.add(target.source);
     else
-        frozenPlayers.delete(target);
-    emitNet('rumble:admin:freeze', target, enabled);
+        frozenPlayers.delete(target.source);
+    emitNet('rumble:admin:freeze', target.source, enabled);
     if (source !== 0)
-        message(source, `Freeze ${enabled ? 'ON' : 'OFF'} for ID ${target}.`, 'success');
+        message(source, `Freeze ${enabled ? 'ON' : 'OFF'} for ID ${target.playerId}.`, 'success');
 });
 registerRumbleCommand('heal', true, async (source, args) => {
-    const target = args[0] === undefined ? source : Number(args[0]);
-    if (!validPlayerSource(target)) {
+    const target = resolveStaticTarget(args[0], source);
+    if (!target) {
         if (source !== 0)
-            message(source, 'Usage: /heal [optional-id].', 'error');
+            message(source, 'Usage: /heal [optional-permanent-id].', 'error');
         return;
     }
-    const session = sessions.get(target);
+    const session = sessions.get(target.source);
     if (!session)
         return source !== 0 ? message(source, 'The player is not loaded.', 'error') : undefined;
     if (String(session.metadata.deathState ?? 'alive') !== 'alive')
         return source !== 0 ? message(source, 'The player is dead. Use /revive.', 'error') : undefined;
-    await setVital(target, 'health', MAX_HEALTH, `admin:heal:${source}`);
+    await setVital(target.source, 'health', MAX_HEALTH, `admin:heal:${source}`);
     await saveSession(session, true);
     if (source !== 0)
-        message(source, `Heal applied to ID ${target}.`, 'success');
+        message(source, `Heal applied to ID ${target.playerId}.`, 'success');
 });
 registerRumbleCommand('revive', true, async (source, args) => {
-    const target = args[0] === undefined ? source : Number(args[0]);
-    if (!validPlayerSource(target)) {
+    const target = resolveStaticTarget(args[0], source);
+    if (!target) {
         if (source !== 0)
-            message(source, 'Usage: /revive [optional-id].', 'error');
+            message(source, 'Usage: /revive [optional-permanent-id].', 'error');
         return;
     }
-    const session = sessions.get(target);
+    const session = sessions.get(target.source);
     if (!session)
         return source !== 0 ? message(source, 'The player is not loaded.', 'error') : undefined;
     session.character.health = MAX_HEALTH;
@@ -2209,9 +2409,9 @@ registerRumbleCommand('revive', true, async (source, args) => {
     markDirty(session);
     await persistMetadata(session, 'deathState', 'alive');
     await saveSession(session, true);
-    emitNet('rumble:admin:revive', target);
+    emitNet('rumble:admin:revive', target.source);
     if (source !== 0)
-        message(source, `Revive applied to ID ${target}.`, 'success');
+        message(source, `Revive applied to ID ${target.playerId}.`, 'success');
 });
 registerRumbleCommand('spectate', true, async (source, args) => {
     if (source === 0)
@@ -2221,10 +2421,10 @@ registerRumbleCommand('spectate', true, async (source, args) => {
         emitNet('rumble:admin:spectate', source, 0);
         return;
     }
-    const target = Number(value);
-    if (!validPlayerSource(target) || target === source)
-        return message(source, 'Usage: /spectate [id] or /spectate off.', 'error');
-    emitNet('rumble:admin:spectate', source, target);
+    const target = resolveStaticTarget(value);
+    if (!target || target.source === source)
+        return message(source, 'Usage: /spectate [permanent-id] or /spectate off.', 'error');
+    emitNet('rumble:admin:spectate', source, target.source);
 });
 registerRumbleCommand('entity', true, async (source) => {
     if (source === 0)
@@ -2242,6 +2442,8 @@ registerRumbleCommand('healthcheck', true, async (source) => {
         return;
     message(source, `Health: ${result.ok ? 'OK' : 'FAIL'} | DB ${result.database ? 'OK' : 'FAIL'} | oxmysql ${result.oxmysql} | migration ${result.migration}/${result.expectedMigration} | admin ${result.adminConfigured ? 'OK' : 'MISSING'}`, result.ok ? 'success' : 'error');
 });
+exports('GetPlayerId', (source) => getStaticPlayerId(Number(source)) || null);
+exports('GetStateId', (source) => sessions.get(Number(source))?.character.stateId ?? null);
 exports('GetPlayer', (source) => {
     const session = sessions.get(Number(source));
     return session ? publicPlayer(session) : null;
@@ -2304,6 +2506,14 @@ exports('RemoveNeed', async (source, need, amount, reason) => {
         return false;
     return await removeNeed(Number(source), need, Number(amount), reason ?? 'export');
 });
+exports('GetPlayerById', (playerId) => {
+    const source = getSourceByStaticPlayerId(Number(playerId));
+    if (source === null)
+        return null;
+    const session = sessions.get(source);
+    return session ? publicPlayer(session) : null;
+});
+exports('GetSourceByPlayerId', (playerId) => getSourceByStaticPlayerId(Number(playerId)) ?? 0);
 exports('GetPlayerByCitizenId', (citizenId) => {
     const wanted = String(citizenId ?? '').trim();
     for (const session of sessions.values())

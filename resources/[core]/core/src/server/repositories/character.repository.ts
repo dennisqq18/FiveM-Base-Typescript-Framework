@@ -1,23 +1,67 @@
+const CHARACTER_COLUMNS = `
+  id,
+  player_identifier,
+  citizen_id,
+  slot,
+  first_name,
+  last_name,
+  DATE_FORMAT(date_of_birth, '%Y-%m-%d') AS date_of_birth,
+  cash,
+  card,
+  position_x,
+  position_y,
+  position_z,
+  position_heading,
+  health,
+  armor,
+  hunger,
+  thirst,
+  last_played,
+  created_at,
+  updated_at,
+  deleted_at
+`;
+
 class CharacterRepository {
   async list(identifier: string): Promise<any[]> {
     return await dbQuery<any[]>(
-      `SELECT * FROM rumble_characters
+      `SELECT ${CHARACTER_COLUMNS}
+       FROM rumble_characters
        WHERE player_identifier = ? AND deleted_at IS NULL
        ORDER BY last_played DESC, slot ASC`,
       [identifier],
     );
   }
 
+  async listSlots(identifier: string): Promise<number[]> {
+    const rows = await dbQuery<any[]>(
+      `SELECT slot
+       FROM rumble_characters
+       WHERE player_identifier = ? AND deleted_at IS NULL
+       ORDER BY slot ASC`,
+      [identifier],
+    );
+    return rows.map((row) => Number(row.slot)).filter((slot) => Number.isInteger(slot) && slot > 0);
+  }
+
   async getById(identifier: string, characterId: number): Promise<any | null> {
     return await dbSingle<any>(
-      `SELECT * FROM rumble_characters
-       WHERE id = ? AND player_identifier = ? AND deleted_at IS NULL LIMIT 1`,
+      `SELECT ${CHARACTER_COLUMNS}
+       FROM rumble_characters
+       WHERE id = ? AND player_identifier = ? AND deleted_at IS NULL
+       LIMIT 1`,
       [characterId, identifier],
     );
   }
 
   async getByIdOnly(characterId: number): Promise<any | null> {
-    return await dbSingle<any>('SELECT * FROM rumble_characters WHERE id = ? LIMIT 1', [characterId]);
+    return await dbSingle<any>(
+      `SELECT ${CHARACTER_COLUMNS}
+       FROM rumble_characters
+       WHERE id = ?
+       LIMIT 1`,
+      [characterId],
+    );
   }
 
   async insert(data: {

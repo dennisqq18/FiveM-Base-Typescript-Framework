@@ -61,12 +61,12 @@ function Registration({ active, serverError, profile }) {
     const namePattern = /^[\p{L}'-]{2,24}$/u;
 
     if (!namePattern.test(first)) {
-      setLocalError('The first name must contain between 2 and 24 letters.');
+      setLocalError('First name must contain between 2 and 24 letters.');
       return;
     }
 
     if (!namePattern.test(last)) {
-      setLocalError('The last name must contain between 2 and 24 letters.');
+      setLocalError('Last name must contain between 2 and 24 letters.');
       return;
     }
 
@@ -95,26 +95,26 @@ function Registration({ active, serverError, profile }) {
 
   return h('main', { className: 'screen-overlay' },
     h('form', { className: 'panel registration-card', onSubmit: submit },
-      h(Brand, { subtitle: profile?.mode === 'complete' ? 'Complete Identity' : 'Character Creation' }),
-      h('h1', null, profile?.mode === 'complete' ? 'Complete Character' : 'Create Character'),
+      h(Brand, { subtitle: profile?.mode === 'complete' ? 'Complete identity' : 'Character creation' }),
+      h('h1', null, profile?.mode === 'complete' ? 'Complete character' : 'Create character'),
       h('p', null, 'Your data is validated and saved server-side.'),
       h('div', { className: 'form-grid' },
         h('div', { className: 'field' },
-          h('label', { htmlFor: 'firstName' }, 'First Name'),
+          h('label', { htmlFor: 'firstName' }, 'First name'),
           h('input', {
             id: 'firstName', type: 'text', value: firstName, maxLength: 24, autoComplete: 'off', autoFocus: true,
             disabled: submitting, onChange: (event) => setFirstName(event.target.value)
           })
         ),
         h('div', { className: 'field' },
-          h('label', { htmlFor: 'lastName' }, 'Last Name'),
+          h('label', { htmlFor: 'lastName' }, 'Last name'),
           h('input', {
             id: 'lastName', type: 'text', value: lastName, maxLength: 24, autoComplete: 'off',
             disabled: submitting, onChange: (event) => setLastName(event.target.value)
           })
         ),
         h('div', { className: 'field full' },
-          h('label', { htmlFor: 'dateOfBirth' }, 'Date of Birth'),
+          h('label', { htmlFor: 'dateOfBirth' }, 'Date of birth'),
           h('input', {
             id: 'dateOfBirth', type: 'date', value: dateOfBirth, min: '1900-01-01', max: maxDate,
             disabled: submitting, onChange: (event) => setDateOfBirth(event.target.value)
@@ -127,11 +127,19 @@ function Registration({ active, serverError, profile }) {
   );
 }
 
+function formatDateEn(value) {
+  const text = String(value || '');
+  const match = text.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!match) return 'Incomplete profile';
+  return `${match[2]}/${match[3]}/${match[1]}`;
+}
+
 function CharacterSelector({ active, data, serverError }) {
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState('');
   const characters = Array.isArray(data?.characters) ? data.characters : [];
   const maxCharacters = Number(data?.maxCharacters || 1);
+  const playerId = Number(data?.playerId || 0);
 
   useEffect(() => {
     if (!active) {
@@ -154,7 +162,7 @@ function CharacterSelector({ active, data, serverError }) {
     nuiPost('characterSelect', { id }).then((result) => {
       if (!result?.accepted) {
         setBusy(false);
-        setLocalError('The character could not be selected.');
+        setLocalError('Could not select the character.');
       }
     }).catch(() => {
       setBusy(false);
@@ -168,7 +176,7 @@ function CharacterSelector({ active, data, serverError }) {
     nuiPost('characterNew', {}).then((result) => {
       if (!result?.accepted) {
         setBusy(false);
-        setLocalError('The character creator could not be opened.');
+        setLocalError('Could not open the character creator.');
       }
     }).catch(() => {
       setBusy(false);
@@ -176,34 +184,67 @@ function CharacterSelector({ active, data, serverError }) {
     });
   }
 
-  return h('main', { className: 'screen-overlay' },
+  return h('main', { className: 'screen-overlay selector-overlay' },
     h('section', { className: 'panel selector-card' },
-      h(Brand, { subtitle: 'Character Selection' }),
+      h('div', { className: 'panel-accent' }),
+      h('div', { className: 'selector-top' },
+        h(Brand, { subtitle: 'Character System' }),
+        h('div', { className: 'selector-stats' },
+          h('div', { className: 'account-id' },
+            h('span', null, 'PERMANENT ID'),
+            h('strong', null, playerId > 0 ? `#${playerId}` : '—')
+          ),
+          h('div', { className: 'slot-counter' },
+            h('strong', null, `${characters.length}/${maxCharacters}`),
+            h('span', null, 'slots used')
+          )
+        )
+      ),
       h('div', { className: 'section-head' },
         h('div', null,
-          h('h1', null, 'Choose Character'),
-          h('p', null, `${characters.length}/${maxCharacters} characters created`)
+          h('span', { className: 'eyebrow' }, 'YOUR CHARACTER'),
+          h('h1', null, 'Choose a character'),
+          h('p', null, 'Select the character you want to use on the server.')
         ),
-        h('button', { className: 'secondary-button', disabled: busy || characters.length >= maxCharacters, onClick: createCharacter }, 'NEW CHARACTER')
+        h('button', { className: 'secondary-button', disabled: busy || characters.length >= maxCharacters, onClick: createCharacter },
+          h('span', { className: 'button-plus' }, '+'),
+          'New character'
+        )
       ),
       h('div', { className: 'character-list' }, characters.map((character) =>
         h('button', {
-          className: `character-row${character.active ? ' active' : ''}`,
+          className: `character-row${character.active ? ' active' : ''}${!character.dateOfBirth ? ' incomplete' : ''}`,
           key: character.id,
           disabled: busy,
           onClick: () => selectCharacter(character.id)
         },
-          h('div', { className: 'character-avatar' }, String(character.firstName || '?').slice(0, 1).toUpperCase()),
+          h('div', { className: 'character-avatar' },
+            h('span', null, String(character.firstName || '?').slice(0, 1).toUpperCase()),
+            h('small', null, `#${Number(character.slot || 0)}`)
+          ),
           h('div', { className: 'character-main' },
-            h('strong', null, `${character.firstName} ${character.lastName}`),
-            h('span', null, `${character.dateOfBirth || 'No date'} | ${character.citizenId}`)
+            h('div', { className: 'character-name-line' },
+              h('strong', null, `${character.firstName} ${character.lastName}`),
+              character.active ? h('span', { className: 'active-badge' }, 'LAST USED') : null
+            ),
+            h('div', { className: 'character-meta' },
+              h('span', { className: 'state-id' }, `State ID #${Number(character.stateId || character.id || 0)}`),
+              h('span', null, `Date of birth: ${formatDateEn(character.dateOfBirth)}`),
+              h('span', null, character.citizenId)
+            )
           ),
           h('div', { className: 'character-money' },
-            h('strong', null, `$${Number(character.cash || 0).toLocaleString()}`),
-            h('span', null, `Card $${Number(character.card || 0).toLocaleString()}`)
-          )
+            h('div', { className: 'money-line' }, h('span', null, 'Cash'), h('strong', null, `$${Number(character.cash || 0).toLocaleString()}`)),
+            h('div', { className: 'money-line' }, h('span', null, 'Card'), h('strong', null, `$${Number(character.card || 0).toLocaleString()}`))
+          ),
+          h('div', { className: 'character-arrow' }, '›')
         )
       )),
+      characters.length === 0 ? h('div', { className: 'empty-state' }, 'No characters have been created.') : null,
+      h('div', { className: 'selector-footer' },
+        h('span', null, 'Rumble Studios'),
+        h('span', null, busy ? 'Processing...' : 'Select a character to continue')
+      ),
       h('div', { className: 'form-error', role: 'alert' }, localError)
     )
   );
@@ -242,8 +283,8 @@ function SpawnSelector({ active, data }) {
   return h('main', { className: 'screen-overlay' },
     h('section', { className: 'panel spawn-card' },
       h(Brand, { subtitle: 'Spawn manager' }),
-      h('h1', null, forcedHospital ? 'Respawn at Hospital' : 'Choose Location'),
-      h('p', null, forcedHospital ? 'The character is dead and must return to the hospital.' : 'You can return to your last position or choose one of the default locations.'),
+      h('h1', null, forcedHospital ? 'Respawn at hospital' : 'Choose location'),
+      h('p', null, forcedHospital ? 'The character is dead and must respawn at the hospital.' : 'Return to your last position or choose one of the default locations.'),
       h('div', { className: 'spawn-grid' }, spawns.map((spawn) =>
         h('button', {
           key: spawn.id,
@@ -264,7 +305,7 @@ function FlyPanel({ active, speed }) {
   if (!active) return null;
   const controls = [
     ['W', 'Forward'], ['S', 'Backward'], ['A', 'Left'], ['D', 'Right'],
-    ['SPACE', 'Up'], ['Q', 'Down'], ['SHIFT', 'Fast'], ['CTRL', 'Fine'],
+    ['SPACE', 'Sus'], ['Q', 'Jos'], ['SHIFT', 'Rapid'], ['CTRL', 'Fin'],
     ['SCROLL', 'Speed'], ['/fly', 'ON / OFF']
   ];
 
@@ -285,7 +326,7 @@ function App() {
   const [registrationError, setRegistrationError] = useState('');
   const [registrationProfile, setRegistrationProfile] = useState({ mode: 'create', characterId: 0, firstName: '', lastName: '', minimumAge: 18 });
   const [selectorActive, setSelectorActive] = useState(false);
-  const [selectorData, setSelectorData] = useState({ characters: [], maxCharacters: 1 });
+  const [selectorData, setSelectorData] = useState({ characters: [], maxCharacters: 1, playerId: 0 });
   const [selectorError, setSelectorError] = useState('');
   const [spawnActive, setSpawnActive] = useState(false);
   const [spawnData, setSpawnData] = useState({ spawns: [], forcedHospital: false });
@@ -293,6 +334,8 @@ function App() {
   const [flySpeed, setFlySpeed] = useState(4);
 
   useEffect(() => {
+    document.documentElement.style.backgroundColor = 'rgba(0, 0, 0, 0)';
+    document.body.style.backgroundColor = 'rgba(0, 0, 0, 0)';
     function receive(event) {
       const data = event.data;
       if (!data || typeof data.type !== 'string') return;
@@ -311,17 +354,17 @@ function App() {
         }
       }
 
-      if (data.type === 'registrationError') setRegistrationError(String(data.message || 'The character could not be saved.'));
+      if (data.type === 'registrationError') setRegistrationError(String(data.message || 'Could not save the character.'));
 
       if (data.type === 'selector') {
         setSelectorActive(Boolean(data.active));
         if (data.active) {
           setSelectorError('');
-          setSelectorData({ characters: Array.isArray(data.characters) ? data.characters : [], maxCharacters: Number(data.maxCharacters || 1) });
+          setSelectorData({ characters: Array.isArray(data.characters) ? data.characters : [], maxCharacters: Number(data.maxCharacters || 1), playerId: Number(data.playerId || 0) });
         }
       }
 
-      if (data.type === 'selectorError') setSelectorError(String(data.message || 'The character could not be selected.'));
+      if (data.type === 'selectorError') setSelectorError(String(data.message || 'Could not select the character.'));
 
       if (data.type === 'spawn') {
         setSpawnActive(Boolean(data.active));

@@ -8,6 +8,7 @@ interface Position {
 
 interface Character {
   id: number;
+  stateId: number;
   citizenId: string;
   slot: number;
   firstName: string;
@@ -23,6 +24,8 @@ interface Character {
 }
 
 interface PlayerData {
+  id: number;
+  playerId: number;
   source: number;
   identifier: string;
   name: string;
@@ -30,6 +33,9 @@ interface PlayerData {
 }
 
 const clientDelay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+let availableSpawns = new Map<string, Position>();
+let characterPreviewCamera = 0;
+let characterSceneToken = 0;
 
 let playerData: PlayerData | null = null;
 let loaded = false;
@@ -62,21 +68,116 @@ function refreshNuiFocus(): void {
   SetNuiFocus(registrationOpen || selectorOpen || spawnOpen, registrationOpen || selectorOpen || spawnOpen);
 }
 
+async function ensureScreenVisible(): Promise<void> {
+  ShutdownLoadingScreen();
+  ShutdownLoadingScreenNui();
+  DoScreenFadeIn(0);
+  for (let frame = 0; frame < 30 && IsScreenFadedOut(); frame++) {
+    DoScreenFadeIn(0);
+    await clientDelay(0);
+  }
+}
+
+function destroyCharacterPreviewCamera(immediate = false): void {
+  if (characterPreviewCamera && DoesCamExist(characterPreviewCamera)) {
+    SetCamActive(characterPreviewCamera, false);
+    RenderScriptCams(false, !immediate, immediate ? 0 : 250, true, true);
+    DestroyCam(characterPreviewCamera, false);
+  }
+  characterPreviewCamera = 0;
+}
+
+async function ensureDefaultCharacterModel(): Promise<number> {
+  const modelName = ClientConfig.characterPreview.model;
+  const model = GetHashKey(modelName);
+  let ped = PlayerPedId();
+
+  if (!DoesEntityExist(ped) || GetEntityModel(ped) !== model) {
+    await loadModel(modelName);
+    SetPlayerModel(PlayerId(), model);
+    SetModelAsNoLongerNeeded(model);
+    await clientDelay(0);
+    ped = PlayerPedId();
+  }
+
+  if (!DoesEntityExist(ped)) throw new Error('The default character could not be created.');
+
+  SetPedDefaultComponentVariation(ped);
+  ClearAllPedProps(ped);
+  ClearPedTasksImmediately(ped);
+  ClearPedBloodDamage(ped);
+  ResetPedVisibleDamage(ped);
+  ResetEntityAlpha(ped);
+  SetEntityVisible(ped, true, false);
+  return ped;
+}
+
+function createCharacterPreviewCamera(ped: number): void {
+  destroyCharacterPreviewCamera(true);
+  const p = ClientConfig.characterPreview.position;
+  const heading = p.heading * Math.PI / 180;
+  const forwardX = -Math.sin(heading);
+  const forwardY = Math.cos(heading);
+  const cameraX = p.x + forwardX * ClientConfig.characterPreview.cameraDistance;
+  const cameraY = p.y + forwardY * ClientConfig.characterPreview.cameraDistance;
+  const cameraZ = p.z + ClientConfig.characterPreview.cameraHeight;
+
+  characterPreviewCamera = CreateCamWithParams(
+    'DEFAULT_SCRIPTED_CAMERA',
+    cameraX,
+    cameraY,
+    cameraZ,
+    0.0,
+    0.0,
+    0.0,
+    ClientConfig.characterPreview.cameraFov,
+    true,
+    2,
+  );
+
+  PointCamAtEntity(characterPreviewCamera, ped, 0.0, 0.0, 0.62, true);
+  SetCamActive(characterPreviewCamera, true);
+  RenderScriptCams(true, true, 250, true, true);
+}
+
+async function prepareCharacterMenuScene(): Promise<void> {
+  const token = ++characterSceneToken;
+  await ensureScreenVisible();
+
+  const currentPed = PlayerPedId();
+  if (DoesEntityExist(currentPed)) {
+    ResetEntityAlpha(currentPed);
+    SetEntityVisible(currentPed, true, false);
+  }
+
+  const ped = await ensureDefaultCharacterModel();
+  if (token !== characterSceneToken) return;
+
+  const p = ClientConfig.characterPreview.position;
+  RequestCollisionAtCoord(p.x, p.y, p.z);
+  SetFocusPosAndVel(p.x, p.y, p.z, 0, 0, 0);
+  SetEntityCoordsNoOffset(ped, p.x, p.y, p.z, false, false, false);
+  SetEntityHeading(ped, p.heading);
+  SetEntityInvincible(ped, true);
+  SetEntityCollision(ped, false, false);
+  SetEntityVisible(ped, true, false);
+  ResetEntityAlpha(ped);
+  FreezeEntityPosition(ped, true);
+  createCharacterPreviewCamera(ped);
+
+  const started = Date.now();
+  while (token === characterSceneToken && !HasCollisionLoadedAroundEntity(ped) && Date.now() - started < ClientConfig.characterSceneCollisionTimeoutMs) {
+    await clientDelay(50);
+  }
+}
+
 function openRegistration(profile: any = {}): void {
   registrationProfile = { ...profile };
   registrationOpen = true;
   selectorOpen = false;
   spawnOpen = false;
   loaded = false;
-  ShutdownLoadingScreen();
-  ShutdownLoadingScreenNui();
-  DoScreenFadeIn(0);
-
-  const ped = PlayerPedId();
-  if (DoesEntityExist(ped)) {
-    FreezeEntityPosition(ped, true);
-    SetEntityInvincible(ped, true);
-  }
+  void prepareCharacterMenuScene();
 
   refreshNuiFocus();
   SendNuiMessage(JSON.stringify({ type: 'selector', active: false }));
@@ -103,14 +204,7 @@ function openSelector(data: any): void {
   spawnOpen = false;
   selectorOpen = true;
   loaded = false;
-  ShutdownLoadingScreen();
-  ShutdownLoadingScreenNui();
-  DoScreenFadeIn(0);
-  const ped = PlayerPedId();
-  if (DoesEntityExist(ped)) {
-    FreezeEntityPosition(ped, true);
-    SetEntityInvincible(ped, true);
-  }
+  void prepareCharacterMenuScene();
   refreshNuiFocus();
   SendNuiMessage(JSON.stringify({ type: 'registration', active: false }));
   SendNuiMessage(JSON.stringify({ type: 'spawn', active: false }));
@@ -124,20 +218,26 @@ function closeSelector(): void {
 }
 
 function openSpawn(data: any): void {
+  const spawns = Array.isArray(data?.spawns) ? data.spawns : [];
+  availableSpawns = new Map<string, Position>();
+  for (const spawn of spawns) {
+    const position = spawn?.position;
+    if (!position) continue;
+    const values = [Number(position.x), Number(position.y), Number(position.z), Number(position.heading)];
+    if (values.every(Number.isFinite)) availableSpawns.set(String(spawn.id), { x: values[0], y: values[1], z: values[2], heading: values[3] });
+  }
   registrationOpen = false;
   selectorOpen = false;
   spawnOpen = true;
   loaded = false;
-  ShutdownLoadingScreen();
-  ShutdownLoadingScreenNui();
-  DoScreenFadeIn(0);
+  void prepareCharacterMenuScene();
   refreshNuiFocus();
   SendNuiMessage(JSON.stringify({ type: 'registration', active: false }));
   SendNuiMessage(JSON.stringify({ type: 'selector', active: false }));
   SendNuiMessage(JSON.stringify({
     type: 'spawn',
     active: true,
-    spawns: Array.isArray(data?.spawns) ? data.spawns : [],
+    spawns,
     forcedHospital: deathState !== 'alive',
   }));
 }
@@ -167,70 +267,60 @@ async function spawnCharacter(data: PlayerData, position?: Position, spawnId = '
   closeRegistration();
   closeSelector();
   closeSpawn();
+  characterSceneToken++;
+  destroyCharacterPreviewCamera();
   loaded = false;
-  DoScreenFadeOut(250);
+  await ensureScreenVisible();
 
-  while (!IsScreenFadedOut()) {
-    await clientDelay(0);
-  }
-
-  const model = await loadModel('mp_m_freemode_01');
+  const model = await loadModel(ClientConfig.characterPreview.model);
   SetPlayerModel(PlayerId(), model);
   SetModelAsNoLongerNeeded(model);
 
   const ped = PlayerPedId();
+  SetPedDefaultComponentVariation(ped);
+  ClearAllPedProps(ped);
+  ResetEntityAlpha(ped);
   const p = position ?? data.character.position;
 
   RequestCollisionAtCoord(p.x, p.y, p.z);
   NetworkResurrectLocalPlayer(p.x, p.y, p.z, p.heading, true, false);
   SetEntityCoordsNoOffset(ped, p.x, p.y, p.z, false, false, false);
   SetEntityHeading(ped, p.heading);
+  SetEntityVisible(ped, true, false);
+  SetEntityCollision(ped, true, true);
   SetEntityHealth(ped, Math.max(100, data.character.health || 200));
   SetPedArmour(ped, Math.max(0, data.character.armor || 0));
   ClearPedTasksImmediately(ped);
   ClearPedBloodDamage(ped);
   SetEntityInvincible(ped, false);
   FreezeEntityPosition(ped, false);
+  ClearFocus();
 
   const collisionStarted = Date.now();
-  while (!HasCollisionLoadedAroundEntity(ped) && Date.now() - collisionStarted < 2500) {
+  while (!HasCollisionLoadedAroundEntity(ped) && Date.now() - collisionStarted < ClientConfig.spawnCollisionTimeoutMs) {
     await clientDelay(50);
   }
 
   playerData = data;
   loaded = true;
+  applyWorldPolicy();
 
-  ShutdownLoadingScreen();
-  ShutdownLoadingScreenNui();
-  DoScreenFadeIn(350);
+  await ensureScreenVisible();
 
   chat(
-    `Welcome, ${data.character.firstName} ${data.character.lastName}. Character ID: ${data.character.id}`,
+    `Welcome, ${data.character.firstName} ${data.character.lastName}. ID: ${data.playerId} | State ID: ${data.character.stateId}`,
     'success',
   );
 
   emitNet('rumble:player:spawned', spawnId);
 }
 
-function sendPlayerState(): void {
-  if (!loaded || !playerData) return;
-
-  const ped = PlayerPedId();
-  if (!DoesEntityExist(ped)) return;
-
-  emitNet('rumble:player:updateState');
-}
-
-setInterval(sendPlayerState, 15000);
-
 onNet('rumble:player:loadError', (text: string) => {
   registrationOpen = false;
   selectorOpen = false;
   spawnOpen = false;
   refreshNuiFocus();
-  ShutdownLoadingScreen();
-  ShutdownLoadingScreenNui();
-  DoScreenFadeIn(250);
+  void ensureScreenVisible();
   chat(String(text || 'Character loading failed. Check the server console.'), 'error');
 });
 
@@ -239,7 +329,7 @@ onNet('rumble:character:registrationRequired', (profile: any) => {
 });
 
 onNet('rumble:character:registrationError', (text: string) => {
-  SendNuiMessage(JSON.stringify({ type: 'registrationError', message: String(text || 'The character could not be created.') }));
+  SendNuiMessage(JSON.stringify({ type: 'registrationError', message: String(text || 'Could not create the character.') }));
 });
 
 onNet('rumble:character:selectorRequired', (data: any) => {
@@ -247,7 +337,7 @@ onNet('rumble:character:selectorRequired', (data: any) => {
 });
 
 onNet('rumble:character:selectorError', (text: string) => {
-  SendNuiMessage(JSON.stringify({ type: 'selectorError', message: String(text || 'The character could not be selected.') }));
+  SendNuiMessage(JSON.stringify({ type: 'selectorError', message: String(text || 'Could not select the character.') }));
 });
 
 RegisterNuiCallbackType('characterCreate');
@@ -299,16 +389,11 @@ on('__cfx_nui:spawnSelect', (data: any, callback: (response: any) => void) => {
     return;
   }
   const id = String(data?.id ?? '');
-  const positions: Record<string, Position> = {
-    airport: { x: -1037.72, y: -2737.88, z: 20.17, heading: 329.0 },
-    legion: { x: 215.76, y: -810.12, z: 30.73, heading: 158.0 },
-    hospital: { x: 298.18, y: -584.45, z: 43.26, heading: 70.0 },
-  };
   if (deathState !== 'alive' && id !== 'hospital') {
     callback({ accepted: false });
     return;
   }
-  const position = id === 'last' ? playerData.character.position : positions[id];
+  const position = id === 'last' ? playerData.character.position : availableSpawns.get(id);
   if (!position) {
     callback({ accepted: false });
     return;
@@ -319,9 +404,9 @@ on('__cfx_nui:spawnSelect', (data: any, callback: (response: any) => void) => {
   }
   callback({ accepted: true });
   void spawnCharacter(playerData, position, id).catch((error) => {
-    DoScreenFadeIn(250);
+    void ensureScreenVisible();
     console.error('[rumble] Spawn failed', error);
-    chat('Spawn failed. Check the F8 console.', 'error');
+    chat('Could not spawn. Check the F8 console.', 'error');
   });
 });
 
@@ -336,7 +421,7 @@ onNet('rumble:character:selected', (data: any) => {
 onNet('rumble:player:loaded', (data: PlayerData) => {
   playerData = data;
   loaded = true;
-  chat(`Welcome, ${data.character.firstName} ${data.character.lastName}. Character ID: ${data.character.id}`, 'success');
+  applyWorldPolicy();
   emit('rumble:client:playerLoaded', data);
 });
 
@@ -400,6 +485,7 @@ onNet('rumble:needs:damage', (amount: number) => {
   if (damage <= 0) return;
 
   SetEntityHealth(ped, Math.max(0, GetEntityHealth(ped) - damage));
+  syncDeathStateFromPed();
 });
 
 onNet('rumble:vitals:set', (vital: 'health' | 'armor', amount: number) => {
@@ -423,7 +509,6 @@ onNet('rumble:vitals:set', (vital: 'health' | 'armor', amount: number) => {
     SetPedArmour(ped, Math.max(0, Math.min(100, Math.floor(Number(amount)))));
   }
 
-  sendPlayerState();
 });
 
 onNet('rumble:admin:fullStats', () => {
@@ -443,7 +528,6 @@ onNet('rumble:admin:fullStats', () => {
   ResetPedVisibleDamage(activePed);
   deathState = 'alive';
   emitNet('rumble:death:update', 'alive');
-  sendPlayerState();
 });
 
 onNet('rumble:admin:revive', () => {
@@ -462,7 +546,6 @@ onNet('rumble:admin:revive', () => {
 
   deathState = 'alive';
   emitNet('rumble:death:update', 'alive');
-  sendPlayerState();
   chat('You have been revived.', 'success');
 });
 
@@ -488,7 +571,7 @@ onNet('rumble:death:respawn', (position: Position) => {
   })().catch((error) => console.error('[rumble] Respawn failed', error));
 });
 
-setInterval(() => {
+function syncDeathStateFromPed(): void {
   if (!loaded || !playerData) return;
   const ped = PlayerPedId();
   if (!DoesEntityExist(ped)) return;
@@ -500,7 +583,19 @@ setInterval(() => {
     deathState = 'alive';
     emitNet('rumble:death:update', 'alive');
   }
-}, 1000);
+}
+
+let deathCheckQueued = false;
+on('gameEventTriggered', (eventName: string, args: any[]) => {
+  if (eventName !== 'CEventNetworkEntityDamage' || !loaded || deathCheckQueued) return;
+  const victim = Number(args?.[0] ?? 0);
+  if (victim !== PlayerPedId()) return;
+  deathCheckQueued = true;
+  setTimeout(() => {
+    deathCheckQueued = false;
+    syncDeathStateFromPed();
+  }, 0);
+});
 
 function getFlyTarget(): number {
   const ped = PlayerPedId();
@@ -556,7 +651,7 @@ function startFly(): void {
   flyEntity = getFlyTarget();
   updateFlyUi();
 
-  chat('Fly enabled. Use the mouse wheel to change speed; /fly disables it.', 'success');
+  chat('Fly enabled. Scroll changes speed; /fly disables it.', 'success');
 
   flyTick = setTick(() => {
     const nextEntity = getFlyTarget();
@@ -650,7 +745,7 @@ function stopFly(): void {
   restoreFlyEntity(flyEntity);
   flyEntity = 0;
   updateFlyUi();
-  chat('Fly disabled.', 'info');
+  chat('Fly dezactivat.', 'info');
 }
 
 onNet('rumble:admin:toggleFly', () => {
@@ -702,7 +797,7 @@ onNet('rumble:admin:gotoWaypoint', () => {
     await clientDelay(250);
     DoScreenFadeIn(250);
 
-    chat(ground !== null ? 'Teleported to waypoint.' : 'Teleported to waypoint; exact ground height was not found.', ground !== null ? 'success' : 'info');
+    chat(ground !== null ? 'Teleported to waypoint.' : 'Teleported to waypoint; exact ground level was not found.', ground !== null ? 'success' : 'info');
   })().catch((error) => {
     console.error(error);
     ClearFocus();
@@ -743,7 +838,7 @@ onNet('rumble:admin:teleport', (position: Position) => {
 onNet('rumble:admin:freeze', (enabled: boolean) => {
   const entity = getControllableEntity();
   FreezeEntityPosition(entity, Boolean(enabled));
-  chat(Boolean(enabled) ? 'You were frozen by the administrator.' : 'Freeze disabled.', 'info');
+  chat(Boolean(enabled) ? 'You were frozen by an administrator.' : 'Freeze disabled.', 'info');
 });
 
 onNet('rumble:admin:spawnVehicle', (modelName: string) => {
@@ -762,7 +857,7 @@ onNet('rumble:admin:spawnVehicle', (modelName: string) => {
     const [x, y, z] = GetEntityCoords(ped, false);
     const heading = GetEntityHeading(ped);
     const vehicle = CreateVehicle(model, x, y, z + 0.5, heading, true, true);
-    if (!vehicle || !DoesEntityExist(vehicle)) return chat('The vehicle could not be created.', 'error');
+    if (!vehicle || !DoesEntityExist(vehicle)) return chat('Vehiculul nu a putut fi creat.', 'error');
     SetEntityAsMissionEntity(vehicle, true, true);
     SetVehicleOnGroundProperly(vehicle);
     SetPedIntoVehicle(ped, vehicle, -1);
@@ -801,10 +896,10 @@ onNet('rumble:admin:spectate', (targetServerId: number) => {
   const player = GetPlayerFromServerId(target);
   if (player < 0) return chat('The player is not in scope.', 'error');
   const ped = GetPlayerPed(player);
-  if (!ped || !DoesEntityExist(ped)) return chat('The player ped is unavailable.', 'error');
+  if (!ped || !DoesEntityExist(ped)) return chat("The player's ped is not available.", 'error');
   NetworkSetInSpectatorMode(true, ped);
   spectatingServerId = target;
-  chat(`Spectating ID ${target}.`, 'success');
+  chat(`Spectate enabled for ID ${target}.`, 'success');
 });
 
 onNet('rumble:admin:inspectEntity', () => {
@@ -854,52 +949,55 @@ async function serverCallback<K extends RumbleCallbackName>(
 on('onClientResourceStart', (resourceName: string) => {
   if (resourceName !== GetCurrentResourceName()) return;
 
+  applyWorldPolicy();
+
   setTimeout(() => {
     emit('chat:addSuggestion', '/ara', 'Revive all players within 10m, including yourself.');
-    emit('chat:addSuggestion', '/fly', 'Enable or disable fly/noclip.');
+    emit('chat:addSuggestion', '/fly', 'Enable/disable fly/noclip.');
     emit('chat:addSuggestion', '/gotow', 'Teleport to the waypoint set on the map.');
-    emit('chat:addSuggestion', '/tp', 'Teleport to coordinates.', [
-      { name: 'x', help: 'X coordinate' },
-      { name: 'y', help: 'Y coordinate' },
-      { name: 'z', help: 'Z coordinate' },
+    emit('chat:addSuggestion', '/tp', 'Teleport la coordonate.', [
+      { name: 'x', help: 'Coordonata X' },
+      { name: 'y', help: 'Coordonata Y' },
+      { name: 'z', help: 'Coordonata Z' },
       { name: 'heading', help: 'Optional heading' },
     ]);
-    emit('chat:addSuggestion', '/bring', 'Bring a player to you.', [{ name: 'id', help: 'Server ID' }]);
-    emit('chat:addSuggestion', '/goto', 'Go to a player.', [{ name: 'id', help: 'Server ID' }]);
+    emit('chat:addSuggestion', '/bring', 'Bring a player to you.', [{ name: 'id', help: 'Permanent ID' }]);
+    emit('chat:addSuggestion', '/goto', 'Teleport to a player.', [{ name: 'id', help: 'Permanent ID' }]);
     emit('chat:addSuggestion', '/coords', 'Show current coordinates.');
     emit('chat:addSuggestion', '/heading', 'Show current heading.');
-    emit('chat:addSuggestion', '/pos', 'Show the current position as vector4.');
+    emit('chat:addSuggestion', '/pos', 'Show position as vector4.');
     emit('chat:addSuggestion', '/vehicle', 'Spawn a vehicle.', [{ name: 'model', help: 'Model GTA' }]);
     emit('chat:addSuggestion', '/dv', 'Delete the current or a nearby vehicle.', [{ name: 'radius', help: '1-100, default 5' }]);
-    emit('chat:addSuggestion', '/freeze', 'Freeze or unfreeze a player.', [{ name: 'id', help: 'Server ID' }]);
-    emit('chat:addSuggestion', '/heal', 'Heal yourself or another player.', [{ name: 'id', help: 'Optional server ID' }]);
-    emit('chat:addSuggestion', '/revive', 'Revive yourself or another player.', [{ name: 'id', help: 'Optional server ID' }]);
-    emit('chat:addSuggestion', '/spectate', 'Spectate a player or turn spectate off.', [{ name: 'id/off', help: 'Server ID or off' }]);
+    emit('chat:addSuggestion', '/freeze', 'Freeze/unfreeze a player.', [{ name: 'id', help: 'Permanent ID' }]);
+    emit('chat:addSuggestion', '/heal', 'Heal yourself or another player.', [{ name: 'id', help: 'Optional permanent ID' }]);
+    emit('chat:addSuggestion', '/revive', 'Revive yourself or another player.', [{ name: 'id', help: 'Optional permanent ID' }]);
+    emit('chat:addSuggestion', '/spectate', 'Spectate a player or turn spectate off.', [{ name: 'id/off', help: 'Permanent ID or off' }]);
     emit('chat:addSuggestion', '/entity', 'Inspect the entity in front of the camera.');
     emit('chat:addSuggestion', '/vehinfo', 'Show information about the current vehicle.');
     emit('chat:addSuggestion', '/healthcheck', 'Run the core health check.');
+    emit('chat:addSuggestion', '/id', "Show the permanent player ID and the character's State ID.");
     emit('chat:addSuggestion', '/money', 'Show cash and card balance.');
     emit('chat:addSuggestion', '/cash', 'Show cash balance.');
     emit('chat:addSuggestion', '/card', 'Show card balance.');
     emit('chat:addSuggestion', '/stats', 'Show hunger, thirst, health, and armor.');
-    emit('chat:addSuggestion', '/fullstats', 'Fully restore hunger, thirst, health, and armor.');
+    emit('chat:addSuggestion', '/fullstats', 'Restore hunger, thirst, health, and armor to maximum.');
     emit('chat:addSuggestion', '/hunger', 'Set hunger to 100%.');
     emit('chat:addSuggestion', '/water', 'Set thirst to 100%.');
-    emit('chat:addSuggestion', '/health', 'Restore health to maximum.');
+    emit('chat:addSuggestion', '/health', 'Set health to maximum.');
     emit('chat:addSuggestion', '/armor', 'Set armor to 100%.');
     emit('chat:addSuggestion', '/chars', 'List your characters.');
     emit('chat:addSuggestion', '/newchar', 'Create and select a character.', [
-      { name: 'firstName', help: 'First Name' },
-      { name: 'lastName', help: 'Last Name' },
-      { name: 'date', help: 'YYYY-MM-DD' },
+      { name: 'firstName', help: 'First name' },
+      { name: 'lastName', help: 'Last name' },
+      { name: 'data', help: 'YYYY-MM-DD' },
     ]);
     emit('chat:addSuggestion', '/switchchar', 'Switch character using the ID from /chars.', [
-      { name: 'id', help: 'Character ID' },
+      { name: 'stateId', help: 'Character State ID' },
     ]);
     emit('chat:addSuggestion', '/characters', 'Open the character selector.');
-    emit('chat:addSuggestion', '/inv', 'List your inventory in chat.');
+    emit('chat:addSuggestion', '/inv', 'List inventory in chat.');
     emit('chat:addSuggestion', '/use', 'Use an item.', [{ name: 'item', help: 'water, sandwich, medkit, armor' }]);
-    emit('chat:addSuggestion', '/giveitem', 'Give an item to a player.');
+    emit('chat:addSuggestion', '/giveitem', 'Add an item to a player.');
     emit('chat:addSuggestion', '/vehicles', 'List owned vehicles.');
     emit('chat:addSuggestion', '/addvehicle', 'Add an owned vehicle to a player.');
     emit('chat:addSuggestion', '/respawn', 'Respawn at the hospital when dead.');
@@ -911,7 +1009,18 @@ on('onClientResourceStart', (resourceName: string) => {
 on('onClientResourceStop', (resourceName: string) => {
   if (resourceName !== GetCurrentResourceName()) return;
   stopFly();
-  if (spectatingServerId) NetworkSetInSpectatorMode(false, PlayerPedId());
+  characterSceneToken++;
+  destroyCharacterPreviewCamera(true);
+  ClearFocus();
+  const ped = PlayerPedId();
+  if (DoesEntityExist(ped)) {
+    ResetEntityAlpha(ped);
+    SetEntityVisible(ped, true, false);
+    SetEntityInvincible(ped, false);
+    SetEntityCollision(ped, true, true);
+    FreezeEntityPosition(ped, false);
+  }
+  if (spectatingServerId) NetworkSetInSpectatorMode(false, ped);
   spectatingServerId = 0;
   closeRegistration();
   closeSelector();

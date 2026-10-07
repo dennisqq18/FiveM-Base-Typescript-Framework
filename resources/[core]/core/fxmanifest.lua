@@ -1,9 +1,9 @@
 fx_version 'cerulean'
 game 'gta5'
 
-author 'Rumble Framework'
+author 'Rumble Studios'
 description 'Rumble - standalone TypeScript framework foundation for FiveM'
-version '0.8.8'
+version '0.10.4'
 
 node_version '22'
 

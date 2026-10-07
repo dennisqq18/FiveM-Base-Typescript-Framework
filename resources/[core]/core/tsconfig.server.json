@@ -14,14 +14,15 @@
   },
   "files": [
     "src/types/fivem-server.d.ts",
-    "src/shared.ts",
-    "src/shared-utils.ts",
-    "src/server/config.ts",
-    "src/server/utils.ts",
-    "src/server/database.ts",
-    "src/server/cache.ts",
-    "src/server/security.ts",
-    "src/server/logger.ts",
+    "src/shared/types.ts",
+    "src/shared/utils.ts",
+    "src/config/core.config.ts",
+    "src/config/gameplay.config.ts",
+    "src/server/utils/server.utils.ts",
+    "src/server/database/connection.ts",
+    "src/server/cache/player.cache.ts",
+    "src/server/security/security.ts",
+    "src/server/logging/logger.ts",
     "src/server/repositories/player.repository.ts",
     "src/server/repositories/character.repository.ts",
     "src/server/repositories/metadata.repository.ts",
@@ -30,6 +31,7 @@
     "src/server/repositories/money.repository.ts",
     "src/server/repositories/log.repository.ts",
     "src/server/repositories/migration.repository.ts",
+    "src/server/services/database.service.ts",
     "src/server.ts"
   ]
 }

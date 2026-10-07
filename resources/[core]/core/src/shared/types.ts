@@ -12,6 +12,7 @@ namespace RumbleShared {
 
   export interface Character {
     id: number;
+    stateId: number;
     citizenId: string;
     slot: number;
     firstName: string;
@@ -27,6 +28,8 @@ namespace RumbleShared {
   }
 
   export interface PlayerData {
+    id: number;
+    playerId: number;
     source: number;
     identifier: string;
     name: string;
