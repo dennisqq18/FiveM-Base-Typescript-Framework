@@ -1,7 +1,6 @@
 {
   "compilerOptions": {
     "target": "ES2021",
-    "module": "none",
     "outFile": "dist/server.js",
     "strict": true,
     "skipLibCheck": true,

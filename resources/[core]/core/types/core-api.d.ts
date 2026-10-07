@@ -27,6 +27,14 @@ declare namespace RumbleAPI {
     thirst: number;
   }
 
+  interface FactionMembership {
+    name: string;
+    label: string;
+    grade: number;
+    gradeName: string;
+    gradeLabel: string;
+  }
+
   interface PlayerData {
     id: number;
     playerId: number;
@@ -34,12 +42,14 @@ declare namespace RumbleAPI {
     identifier: string;
     name: string;
     character: Character;
+    faction: FactionMembership | null;
   }
 
   interface CallbackMap {
     'rumble:getPlayer': { request: null; response: PlayerData | null };
     'rumble:getInventory': { request: null; response: any };
     'rumble:getMetadata': { request: null; response: Record<string, any> | null };
+    'rumble:getFaction': { request: null; response: FactionMembership | null };
     'rumble:getVehicles': { request: null; response: any[] };
     'rumble:getConfig': { request: null; response: Record<string, any> };
   }

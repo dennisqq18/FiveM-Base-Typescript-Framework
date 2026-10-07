@@ -22,7 +22,7 @@ on('onResourceStart', (resourceName) => {
         return;
     if (GetResourceState('runtime') === 'started') {
         try {
-            globalThis.exports.runtime.RegisterModule('entities', '0.11.2', RESOURCE);
+            globalThis.exports.runtime.RegisterModule('entities', '0.11.3', RESOURCE);
             globalThis.exports.runtime.ReportHealth('entities', 'healthy', {});
         }
         catch { }

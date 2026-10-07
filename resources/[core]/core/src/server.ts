@@ -58,6 +58,14 @@ interface Character {
   version: number;
 }
 
+interface FactionMembership {
+  name: string;
+  label: string;
+  grade: number;
+  gradeName: string;
+  gradeLabel: string;
+}
+
 interface PlayerSession {
   source: number;
   playerId: number;
@@ -66,6 +74,7 @@ interface PlayerSession {
   character: Character;
   metadata: Record<string, any>;
   inventory: InventorySlot[];
+  faction: FactionMembership | null;
   spawned: boolean;
   revision: number;
   savedRevision: number;
@@ -95,6 +104,7 @@ const characterRepository = new CharacterRepository();
 const metadataRepository = new MetadataRepository();
 const inventoryRepository = new InventoryRepository();
 const vehicleRepository = new VehicleRepository();
+const factionRepository = new FactionRepository();
 const moneyRepository = new MoneyRepository();
 const logRepository = new LogRepository();
 const migrationRepository = new MigrationRepository();
@@ -185,6 +195,7 @@ function publicPlayer(session: PlayerSession): any {
       ...session.character,
       position: { ...session.character.position },
     },
+    faction: session.faction ? { ...session.faction } : null,
   };
 }
 
@@ -213,6 +224,8 @@ function syncStateBag(session: PlayerSession): void {
   setPlayerState(session.source, 'rumbleHunger', session.character.hunger);
   setPlayerState(session.source, 'rumbleThirst', session.character.thirst);
   setPlayerState(session.source, 'rumbleDeathState', String(session.metadata.deathState ?? 'alive'));
+  setPlayerState(session.source, 'rumbleFaction', session.faction?.name ?? 'unemployed');
+  setPlayerState(session.source, 'rumbleFactionGrade', session.faction?.grade ?? 0);
   setPlayerState(session.source, 'rumbleAdmin', isAdmin(session.source));
 }
 
@@ -247,6 +260,17 @@ async function logAction(
   }
 }
 
+function toFactionMembership(row: FactionMembershipRow | null): FactionMembership | null {
+  if (!row) return null;
+  return {
+    name: String(row.faction_name),
+    label: String(row.faction_label),
+    grade: Number(row.grade),
+    gradeName: String(row.grade_name),
+    gradeLabel: String(row.grade_label),
+  };
+}
+
 async function loadMetadata(characterId: number): Promise<Record<string, any>> {
   const rows = await metadataRepository.list(characterId);
   const metadata: Record<string, any> = {};
@@ -279,6 +303,7 @@ async function performHealthCheck(): Promise<Record<string, any>> {
   const oxState = typeof resourceState === 'function' ? String(resourceState('oxmysql')) : 'unknown';
   const mysqlConnection = GetConvar('mysql_connection_string', '').trim();
   const onesync = GetConvar('onesync', '').trim();
+  const onesyncReady = !['', 'off', 'false', '0'].includes(onesync.toLowerCase());
   let database = false;
   let migration = 0;
   let databaseError = '';
@@ -293,7 +318,7 @@ async function performHealthCheck(): Promise<Record<string, any>> {
 
   const adminConfigured = Boolean(Config.adminIdentifier && !Config.adminIdentifier.includes('PASTE_'));
   const result = {
-    ok: oxState === 'started' && database && migration >= Config.expectedMigration && Boolean(mysqlConnection),
+    ok: oxState === 'started' && database && migration >= Config.expectedMigration && Boolean(mysqlConnection) && onesyncReady,
     resource: RESOURCE,
     expectedResource: 'core',
     oxmysql: oxState,
@@ -304,6 +329,7 @@ async function performHealthCheck(): Promise<Record<string, any>> {
     expectedMigration: Config.expectedMigration,
     adminConfigured,
     onesync,
+    onesyncReady,
     cachePlayers: sessions.size,
     timestamp: new Date().toISOString(),
   };
@@ -313,6 +339,7 @@ async function performHealthCheck(): Promise<Record<string, any>> {
   Logger.info('HEALTH', 'Startup health check', result);
   if (RESOURCE !== 'core') Logger.warn('HEALTH', 'Resource should be named core for the default configuration', { resource: RESOURCE });
   if (!adminConfigured) Logger.warn('HEALTH', 'Admin identifier is not configured');
+  if (!onesyncReady) Logger.warn('HEALTH', 'OneSync is disabled; multiplayer state validation requires OneSync.');
   if (!result.ok) Logger.error('HEALTH', 'One or more critical startup checks failed', result);
 
   return result;
@@ -351,6 +378,45 @@ function resolveStaticTarget(value: unknown, fallbackSource?: number): { source:
   const playerId = Number(value);
   const source = getSourceByStaticPlayerId(playerId);
   return source === null ? null : { source, playerId };
+}
+
+const FACTION_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  police: 'police',
+  politie: 'police',
+  pd: 'police',
+  lspd: 'police',
+  medics: 'medics',
+  medici: 'medics',
+  medic: 'medics',
+  ems: 'medics',
+  ambulance: 'medics',
+});
+
+function normalizeFactionName(value: unknown): string | null {
+  const raw = String(value ?? '').trim().toLowerCase();
+  if (!raw) return null;
+  if (['none', 'unemployed', 'fara', 'fără', 'civilian'].includes(raw)) return 'unemployed';
+  return FACTION_ALIASES[raw] ?? (/^[a-z0-9_-]{1,32}$/.test(raw) ? raw : null);
+}
+
+async function updateSessionFaction(session: PlayerSession, factionName: string | null, grade = 0): Promise<FactionMembership | null> {
+  if (!factionName || factionName === 'unemployed') {
+    await factionRepository.removeMembership(session.character.id);
+    session.faction = null;
+  } else {
+    if (!await factionRepository.factionExists(factionName)) throw new CoreError('FACTION_NOT_FOUND', 'Faction does not exist.', { factionName });
+    if (!Number.isInteger(grade) || grade < 0 || grade > 255 || !await factionRepository.gradeExists(factionName, grade)) {
+      throw new CoreError('FACTION_GRADE_NOT_FOUND', 'Faction grade does not exist.', { factionName, grade });
+    }
+    await factionRepository.setMembership(session.character.id, factionName, grade);
+    session.faction = toFactionMembership(await factionRepository.getMembership(session.character.id));
+  }
+
+  setPlayerState(session.source, 'rumbleFaction', session.faction?.name ?? 'unemployed');
+  setPlayerState(session.source, 'rumbleFactionGrade', session.faction?.grade ?? 0);
+  emitNet('rumble:faction:update', session.source, session.faction ? { ...session.faction } : null);
+  emit('rumble:server:factionChanged', session.source, session.faction ? { ...session.faction } : null);
+  return session.faction;
 }
 
 function clearStaticPlayerMapping(source: number): void {
@@ -491,8 +557,9 @@ function refreshRuntimeState(session: PlayerSession): void {
   const nextHealth = Math.max(0, Math.min(MAX_HEALTH, Math.floor(values[4])));
   const nextArmor = Math.max(0, Math.min(MAX_ARMOR, Math.floor(values[5])));
   const previous = session.character.position;
-  const moved = Math.hypot(nextPosition.x - previous.x, nextPosition.y - previous.y, nextPosition.z - previous.z) >= 0.05;
-  const rotated = Math.abs(nextPosition.heading - previous.heading) >= 0.25;
+  const moved = Math.hypot(nextPosition.x - previous.x, nextPosition.y - previous.y, nextPosition.z - previous.z) >= Config.stateSyncMinimumDistance;
+  const headingDelta = Math.abs(((nextPosition.heading - previous.heading + 540) % 360) - 180);
+  const rotated = headingDelta >= Config.stateSyncMinimumHeading;
   const vitalsChanged = nextHealth !== session.character.health || nextArmor !== session.character.armor;
   if (!moved && !rotated && !vitalsChanged) return;
 
@@ -529,9 +596,13 @@ async function flushDirtySessions(): Promise<void> {
 
   autosaveRunning = true;
   try {
-    const results = await Promise.allSettled(pending.map((session) => saveSession(session)));
-    for (const result of results) {
-      if (result.status === 'rejected') Logger.error('DATABASE', 'Autosave failed', { error: String(result.reason) });
+    const concurrency = Math.max(1, Math.floor(Config.autosaveConcurrency));
+    for (let index = 0; index < pending.length; index += concurrency) {
+      const batch = pending.slice(index, index + concurrency);
+      const results = await Promise.allSettled(batch.map((session) => saveSession(session)));
+      for (const result of results) {
+        if (result.status === 'rejected') Logger.error('DATABASE', 'Autosave failed', { error: String(result.reason) });
+      }
     }
   } finally {
     autosaveRunning = false;
@@ -547,9 +618,10 @@ async function selectCharacter(source: number, identifier: string, character: Ch
   const existing = sessions.get(source);
   if (existing) await saveSession(existing, true);
 
-  const [metadata, inventory] = await Promise.all([
+  const [metadata, inventory, factionRow] = await Promise.all([
     loadMetadata(character.id),
     loadInventory(character.id),
+    factionRepository.getMembership(character.id),
   ]);
 
   const session: PlayerSession = {
@@ -560,6 +632,7 @@ async function selectCharacter(source: number, identifier: string, character: Ch
     character,
     metadata,
     inventory,
+    faction: toFactionMembership(factionRow),
     spawned: false,
     revision: 0,
     savedRevision: 0,
@@ -643,6 +716,17 @@ async function persistMetadata(session: PlayerSession, key: string, value: any):
   if (!/^[a-zA-Z0-9_.:-]{1,64}$/.test(key)) return false;
   const serialized = JSON.stringify(value);
   if (serialized.length > Config.maxMetadataBytes) return false;
+
+  // Avoid an UPSERT when the value is already persisted in the session cache.
+  // This matters especially for deathState, which can be confirmed several times during spawn/revive.
+  const currentSerialized = Object.prototype.hasOwnProperty.call(session.metadata, key)
+    ? JSON.stringify(session.metadata[key])
+    : undefined;
+  if (currentSerialized === serialized) {
+    if (key === 'deathState') setPlayerState(session.source, 'rumbleDeathState', String(value));
+    return true;
+  }
+
   session.metadata[key] = value;
   markDirty(session, 'metadata');
   await metadataRepository.set(session.character.id, key, serialized);
@@ -1266,8 +1350,9 @@ onNet('rumble:player:updateState', () => {
   const nextHealth = Math.max(0, Math.min(MAX_HEALTH, Math.floor(values[4])));
   const nextArmor = Math.max(0, Math.min(MAX_ARMOR, Math.floor(values[5])));
   const previous = session.character.position;
-  const moved = Math.hypot(nextPosition.x - previous.x, nextPosition.y - previous.y, nextPosition.z - previous.z) >= 0.05;
-  const rotated = Math.abs(nextPosition.heading - previous.heading) >= 0.25;
+  const moved = Math.hypot(nextPosition.x - previous.x, nextPosition.y - previous.y, nextPosition.z - previous.z) >= Config.stateSyncMinimumDistance;
+  const headingDelta = Math.abs(((nextPosition.heading - previous.heading + 540) % 360) - 180);
+  const rotated = headingDelta >= Config.stateSyncMinimumHeading;
   const vitalsChanged = nextHealth !== session.character.health || nextArmor !== session.character.armor;
   if (!moved && !rotated && !vitalsChanged) return;
 
@@ -1292,9 +1377,23 @@ onNet('rumble:death:update', (stateInput: string) => {
 
   if (state === 'alive') {
     if (health <= 0) {
-      rejectSecurity(source, 'invalid_alive_state', { health });
+      // OneSync can report the old dead ped for a few frames immediately after a client resurrection.
+      // Verify once more instead of flagging a legitimate revive as a security violation.
+      setTimeout(() => {
+        const current = sessions.get(source);
+        if (!current || !GetPlayerName(source)) return;
+        const currentPed = GetPlayerPed(source);
+        const verifiedHealth = currentPed ? Number((globalThis as any).GetEntityHealth?.(currentPed) ?? 0) : 0;
+        if (!Number.isFinite(verifiedHealth) || verifiedHealth <= 0) return;
+        current.character.health = Math.max(1, Math.min(MAX_HEALTH, Math.floor(verifiedHealth)));
+        markDirty(current);
+        void persistMetadata(current, 'deathState', 'alive');
+        emitNet('rumble:death:state', source, 'alive');
+      }, 500);
       return;
     }
+    session.character.health = Math.max(1, Math.min(MAX_HEALTH, Math.floor(health)));
+    markDirty(session);
     void persistMetadata(session, 'deathState', 'alive');
     emitNet('rumble:death:state', source, 'alive');
     return;
@@ -1403,6 +1502,11 @@ registerTypedRpc('rumble:getMetadata', (source) => {
   return session ? publicMetadata(session) : null;
 });
 
+registerTypedRpc('rumble:getFaction', (source) => {
+  const session = sessions.get(source);
+  return session?.faction ? { ...session.faction } : null;
+});
+
 registerTypedRpc('rumble:getVehicles', async (source) => await getOwnedVehicles(source));
 
 registerTypedRpc('rumble:getConfig', () => ({
@@ -1461,6 +1565,37 @@ registerRumbleCommand('addvehicle', true, async (source, args) => {
   }
   const vehicle = await addOwnedVehicle(target.source, model, plate);
   if (source !== 0) message(source, vehicle ? `Vehicle added for ID ${target.playerId}: ${vehicle.model} ${vehicle.plate}.` : 'Could not add the vehicle.', vehicle ? 'success' : 'error');
+});
+
+registerRumbleCommand('setfaction', true, async (source, args) => {
+  const target = resolveStaticTarget(args[0]);
+  const factionName = normalizeFactionName(args[1]);
+  const grade = Math.floor(Number(args[2] ?? 0));
+  if (!target || !factionName || !Number.isInteger(grade) || grade < 0 || grade > 255) {
+    if (source !== 0) message(source, 'Usage: /setfaction [permanent-id] [police|medics|none] [grade].', 'error');
+    return;
+  }
+
+  const targetSession = sessions.get(target.source);
+  if (!targetSession) {
+    if (source !== 0) message(source, 'The player must be online with a loaded character.', 'error');
+    return;
+  }
+
+  try {
+    const faction = await updateSessionFaction(targetSession, factionName, grade);
+    const label = faction ? `${faction.label} - ${faction.gradeLabel} (${faction.grade})` : 'No faction';
+    if (source !== 0) message(source, `Faction updated for ID ${target.playerId}: ${label}.`, 'success');
+    message(target.source, `Your faction has been updated: ${label}.`, 'success');
+    void logAction('faction', 'assigned', source, target.source, { faction: faction?.name ?? null, grade: faction?.grade ?? 0 });
+  } catch (error) {
+    const text = error instanceof CoreError && error.code === 'FACTION_GRADE_NOT_FOUND'
+      ? 'That grade does not exist for the selected faction.'
+      : error instanceof CoreError && error.code === 'FACTION_NOT_FOUND'
+        ? 'That faction does not exist. Use police, medics, or none.'
+        : 'Could not update the faction.';
+    if (source !== 0) message(source, text, 'error');
+  }
 });
 
 registerRumbleCommand('respawn', false, async (source) => {
@@ -1894,7 +2029,7 @@ registerRumbleCommand('vehinfo', true, async (source) => {
 registerRumbleCommand('healthcheck', true, async (source) => {
   const result = await performHealthCheck();
   if (source === 0) return;
-  message(source, `Health: ${result.ok ? 'OK' : 'FAIL'} | DB ${result.database ? 'OK' : 'FAIL'} | oxmysql ${result.oxmysql} | migration ${result.migration}/${result.expectedMigration} | admin ${result.adminConfigured ? 'OK' : 'MISSING'}`, result.ok ? 'success' : 'error');
+  message(source, `Health: ${result.ok ? 'OK' : 'FAIL'} | DB ${result.database ? 'OK' : 'FAIL'} | oxmysql ${result.oxmysql} | OneSync ${result.onesyncReady ? 'OK' : 'OFF'} | migration ${result.migration}/${result.expectedMigration} | admin ${result.adminConfigured ? 'OK' : 'MISSING'}`, result.ok ? 'success' : 'error');
 });
 
 exports('GetPlayerId', (source: number) => getStaticPlayerId(Number(source)) || null);
@@ -1999,6 +2134,24 @@ exports('KickPlayer', (source: number, reason?: string) => {
 });
 
 exports('IsAdmin', (source: number) => isAdmin(Number(source)));
+
+exports('GetFaction', (source: number) => {
+  const session = sessions.get(Number(source));
+  return session?.faction ? { ...session.faction } : null;
+});
+
+exports('SetFaction', async (source: number, factionInput: string | null, grade = 0) => {
+  const session = sessions.get(Number(source));
+  if (!session) return false;
+  const factionName = normalizeFactionName(factionInput);
+  if (!factionName) return false;
+  try {
+    await updateSessionFaction(session, factionName, Math.floor(Number(grade)));
+    return true;
+  } catch {
+    return false;
+  }
+});
 
 exports('GetMetadata', (source: number, key?: string) => {
   const session = sessions.get(Number(source));

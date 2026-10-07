@@ -68,7 +68,7 @@ on('onResourceStart', (resourceName) => {
         return;
     if (GetResourceState('runtime') === 'started') {
         try {
-            globalThis.exports.runtime.RegisterModule('permissions', '0.11.2', RESOURCE);
+            globalThis.exports.runtime.RegisterModule('permissions', '0.11.3', RESOURCE);
             globalThis.exports.runtime.ReportHealth('permissions', 'healthy', {});
         }
         catch { }

@@ -1,0 +1,16 @@
+declare function on(eventName: string, handler: (...args: any[]) => void): void;
+declare function onNet(eventName: string, handler: (...args: any[]) => void): void;
+declare function emit(eventName: string, ...args: any[]): void;
+declare function emitNet(eventName: string, target: number | string, ...args: any[]): void;
+declare function RegisterCommand(commandName: string, handler: (source: number, args: string[], rawCommand: string) => void, restricted: boolean): void;
+declare function GetCurrentResourceName(): string;
+declare function GetResourceState(resourceName: string): string;
+declare function GetPlayerName(source: number | string): string | null;
+declare function GetPlayerPed(source: number | string): number;
+declare function GetEntityCoords(entity: number): [number, number, number];
+declare function DoesEntityExist(entity: number): boolean;
+declare function NetworkGetEntityFromNetworkId(netId: number): number;
+declare function GetEntityModel(entity: number): number;
+declare function GetHashKey(value: string): number;
+declare function exports(exportName: string, handler: (...args: any[]) => any): void;
+declare function GetInvokingResource(): string | null;

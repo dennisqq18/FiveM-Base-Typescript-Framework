@@ -104,7 +104,7 @@ on('onResourceStart', (resourceName) => {
         return;
     if (GetResourceState('runtime') === 'started') {
         try {
-            globalThis.exports.runtime.RegisterModule('observability', '0.11.2', RESOURCE);
+            globalThis.exports.runtime.RegisterModule('observability', '0.11.3', RESOURCE);
             globalThis.exports.runtime.ReportHealth('observability', 'healthy', {});
             globalThis.exports.runtime.ScheduleEvent('observability.memory', 60000, 'rumble:observability:sample', null);
         }

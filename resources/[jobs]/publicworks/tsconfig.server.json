@@ -5,14 +5,12 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmitOnError": true,
-    "lib": [
-      "ES2021",
-      "DOM"
-    ],
+    "lib": ["ES2021", "DOM"],
     "removeComments": true
   },
   "files": [
     "src/types/fivem-server.d.ts",
+    "src/shared.ts",
     "src/server.ts"
   ]
 }

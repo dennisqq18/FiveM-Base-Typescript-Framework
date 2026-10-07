@@ -224,6 +224,71 @@ async function applyBackendRuntimeMigration(): Promise<void> {
   await migrationRepository.record(4, 'backend_runtime_foundation', 'rumble-004-v1');
 }
 
+
+async function applyFactionMigration(): Promise<void> {
+  await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rumble_factions (
+      name VARCHAR(32) NOT NULL,
+      label VARCHAR(64) NOT NULL,
+      category ENUM('government','civilian') NOT NULL DEFAULT 'government',
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (name)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rumble_faction_grades (
+      faction_name VARCHAR(32) NOT NULL,
+      grade TINYINT UNSIGNED NOT NULL,
+      name VARCHAR(32) NOT NULL,
+      label VARCHAR(64) NOT NULL,
+      salary INT UNSIGNED NOT NULL DEFAULT 0,
+      PRIMARY KEY (faction_name, grade),
+      CONSTRAINT fk_rumble_faction_grades_faction FOREIGN KEY (faction_name) REFERENCES rumble_factions(name) ON DELETE CASCADE ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await dbQuery(`
+    CREATE TABLE IF NOT EXISTS rumble_character_factions (
+      character_id INT UNSIGNED NOT NULL,
+      faction_name VARCHAR(32) NOT NULL,
+      grade TINYINT UNSIGNED NOT NULL DEFAULT 0,
+      assigned_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      PRIMARY KEY (character_id),
+      KEY idx_rumble_character_factions_faction (faction_name, grade),
+      CONSTRAINT fk_rumble_character_factions_character FOREIGN KEY (character_id) REFERENCES rumble_characters(id) ON DELETE CASCADE ON UPDATE CASCADE,
+      CONSTRAINT fk_rumble_character_factions_grade FOREIGN KEY (faction_name, grade) REFERENCES rumble_faction_grades(faction_name, grade) ON DELETE RESTRICT ON UPDATE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+
+  await dbQuery(
+    `INSERT INTO rumble_factions (name, label, category) VALUES
+       ('police', 'Los Santos Police Department', 'government'),
+       ('medics', 'Los Santos Doctoral Service', 'government')
+     ON DUPLICATE KEY UPDATE label = VALUES(label), category = VALUES(category)`,
+  );
+
+  await dbQuery(
+    `INSERT INTO rumble_faction_grades (faction_name, grade, name, label, salary) VALUES
+       ('police', 0, 'cadet', 'Cadet', 450),
+       ('police', 1, 'officer', 'Officer', 600),
+       ('police', 2, 'senior_officer', 'Senior Officer', 750),
+       ('police', 3, 'sergeant', 'Sergeant', 900),
+       ('police', 4, 'lieutenant', 'Lieutenant', 1100),
+       ('police', 5, 'chief', 'Chief of Police', 1400),
+       ('medics', 0, 'intern', 'Intern', 450),
+       ('medics', 1, 'paramedic', 'Paramedic', 600),
+       ('medics', 2, 'doctor', 'Doctor', 800),
+       ('medics', 3, 'senior_doctor', 'Senior Doctor', 950),
+       ('medics', 4, 'supervisor', 'Supervisor', 1150),
+       ('medics', 5, 'director', 'Director Doctoral', 1400)
+     ON DUPLICATE KEY UPDATE name = VALUES(name), label = VALUES(label), salary = VALUES(salary)`,
+  );
+
+  await migrationRepository.record(5, 'factions_foundation', 'rumble-005-v1');
+}
+
 async function initializeDatabase(): Promise<void> {
   await waitForDatabase();
 
@@ -250,6 +315,8 @@ async function initializeDatabase(): Promise<void> {
     migration = 3;
     await applyBackendRuntimeMigration();
     migration = 4;
+    await applyFactionMigration();
+    migration = 5;
   } else {
     if (migration < 2) {
       await applyFoundationMigration();
@@ -262,6 +329,10 @@ async function initializeDatabase(): Promise<void> {
     if (migration < 4) {
       await applyBackendRuntimeMigration();
       migration = 4;
+    }
+    if (migration < 5) {
+      await applyFactionMigration();
+      migration = 5;
     }
   }
 

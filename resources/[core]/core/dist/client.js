@@ -31,6 +31,8 @@ var RumbleShared;
 })(RumbleShared || (RumbleShared = {}));
 const ClientConfig = Object.freeze({
     spawnCollisionTimeoutMs: 4000,
+    defaultPlayerModel: 'mp_m_freemode_01',
+    modelLoadTimeoutMs: 10000,
     characterCinematic: Object.freeze({
         fov: 48.0,
         focusRefreshMs: 500,
@@ -101,6 +103,7 @@ let lastCharacterCinematicScene = -1;
 let characterSceneToken = 0;
 let playerData = null;
 let loaded = false;
+let multiplayerPedInitialized = false;
 let registrationOpen = false;
 let selectorOpen = false;
 let spawnOpen = false;
@@ -320,6 +323,27 @@ function closeSpawn() {
     SendNuiMessage(JSON.stringify({ type: 'spawn', active: false }));
     refreshNuiFocus();
 }
+async function ensureMultiplayerPlayerModel() {
+    if (multiplayerPedInitialized)
+        return await waitForPlayerPed();
+    const model = GetHashKey(ClientConfig.defaultPlayerModel);
+    if (!IsModelInCdimage(model))
+        throw new Error(`Invalid multiplayer model: ${ClientConfig.defaultPlayerModel}`);
+    RequestModel(model);
+    const started = Date.now();
+    while (!HasModelLoaded(model)) {
+        if (Date.now() - started >= ClientConfig.modelLoadTimeoutMs)
+            throw new Error('The multiplayer model failed to load.');
+        await clientDelay(25);
+    }
+    SetPlayerModel(PlayerId(), model);
+    SetModelAsNoLongerNeeded(model);
+    const ped = await waitForPlayerPed();
+    SetPedDefaultComponentVariation(ped);
+    ClearAllPedProps(ped);
+    multiplayerPedInitialized = true;
+    return ped;
+}
 async function spawnCharacter(data, position, spawnId = 'last') {
     closeRegistration();
     closeSelector();
@@ -328,7 +352,7 @@ async function spawnCharacter(data, position, spawnId = 'last') {
     destroyCharacterCinematic();
     loaded = false;
     await ensureScreenVisible();
-    const ped = await waitForPlayerPed();
+    const ped = await ensureMultiplayerPlayerModel();
     if (!DoesEntityExist(ped))
         throw new Error('Player ped does not exist.');
     const p = position !== null && position !== void 0 ? position : data.character.position;
@@ -477,6 +501,12 @@ onNet('rumble:player:loaded', (data) => {
     playerData = data;
     loaded = true;
     emit('rumble:client:playerLoaded', data);
+});
+onNet('rumble:faction:update', (faction) => {
+    if (!playerData)
+        return;
+    playerData.faction = faction ? { ...faction } : null;
+    emit('rumble:client:factionChanged', playerData.faction);
 });
 onNet('rumble:money:update', (account, amount) => {
     if (!playerData)
@@ -880,7 +910,7 @@ onNet('rumble:admin:spawnVehicle', (modelName) => {
         const heading = GetEntityHeading(ped);
         const vehicle = CreateVehicle(model, x, y, z + 0.5, heading, true, true);
         if (!vehicle || !DoesEntityExist(vehicle))
-            return chat('Vehiculul nu a putut fi creat.', 'error');
+            return chat('The vehicle could not be created.', 'error');
         SetEntityAsMissionEntity(vehicle, true, true);
         SetVehicleOnGroundProperly(vehicle);
         SetPedIntoVehicle(ped, vehicle, -1);
@@ -1007,6 +1037,11 @@ on('onClientResourceStart', (resourceName) => {
         emit('chat:addSuggestion', '/vehicles', 'List owned vehicles.');
         emit('chat:addSuggestion', '/addvehicle', 'Add an owned vehicle to a player.');
         emit('chat:addSuggestion', '/respawn', 'Respawn at the hospital when dead.');
+        emit('chat:addSuggestion', '/setfaction', 'Set a player faction.', [
+            { name: 'id', help: 'Permanent player ID' },
+            { name: 'faction', help: 'police, medics or none' },
+            { name: 'grade', help: '0-5' },
+        ]);
         emitNet('rumble:player:requestLoad');
     }, 1000);
 });

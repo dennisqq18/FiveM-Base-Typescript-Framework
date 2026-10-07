@@ -98,7 +98,7 @@ on('onResourceStart', (resourceName: string) => {
   if (resourceName !== RESOURCE) return;
   if (GetResourceState('runtime') === 'started') {
     try {
-      (globalThis as any).exports.runtime.RegisterModule('sessions', '0.11.2', RESOURCE);
+      (globalThis as any).exports.runtime.RegisterModule('sessions', '0.11.3', RESOURCE);
       (globalThis as any).exports.runtime.ReportHealth('sessions', 'healthy', { active: sessionsBySource.size });
     } catch {}
   }

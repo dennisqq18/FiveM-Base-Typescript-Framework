@@ -1,7 +1,6 @@
 {
   "compilerOptions": {
     "target": "ES2019",
-    "module": "none",
     "outFile": "dist/client.js",
     "strict": true,
     "skipLibCheck": true,

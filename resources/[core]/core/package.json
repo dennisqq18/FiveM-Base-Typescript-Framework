@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "0.11.2",
+  "version": "0.12.0",
   "private": true,
   "description": "Standalone TypeScript FiveM framework core",
   "scripts": {
@@ -15,6 +15,6 @@
     "test": "node tests/architecture.mjs && node tests/database-contract.mjs"
   },
   "devDependencies": {
-    "typescript": "^5.8.3"
+    "typescript": "5.8.3"
   }
 }

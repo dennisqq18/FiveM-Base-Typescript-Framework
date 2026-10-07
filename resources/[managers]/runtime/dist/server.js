@@ -115,7 +115,7 @@ function publish(nameInput, payload) {
 on('onResourceStart', (resourceName) => {
     if (resourceName !== RESOURCE)
         return;
-    registerModule('runtime', '0.11.2', RESOURCE);
+    registerModule('runtime', '0.11.3', RESOURCE);
     reportHealth('runtime', 'starting', { resources: getDependencyState() });
     checkDependencies();
 });

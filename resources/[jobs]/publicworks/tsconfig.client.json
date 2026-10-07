@@ -5,18 +5,12 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmitOnError": true,
-    "lib": [
-      "ES2019",
-      "DOM"
-    ],
+    "lib": ["ES2019", "DOM"],
     "removeComments": true
   },
   "files": [
     "src/types/fivem-client.d.ts",
-    "src/config.ts",
-    "src/world.ts",
-    "src/actions.ts",
-    "src/camera.ts",
+    "src/shared.ts",
     "src/client.ts"
   ]
 }

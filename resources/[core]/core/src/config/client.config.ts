@@ -1,5 +1,7 @@
 const ClientConfig = Object.freeze({
   spawnCollisionTimeoutMs: 4000,
+  defaultPlayerModel: 'mp_m_freemode_01',
+  modelLoadTimeoutMs: 10000,
   characterCinematic: Object.freeze({
     fov: 48.0,
     focusRefreshMs: 500,

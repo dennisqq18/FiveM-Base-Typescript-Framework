@@ -1,7 +1,6 @@
 {
   "compilerOptions": {
     "target": "ES2021",
-    "module": "none",
     "outFile": "dist/server.js",
     "strict": true,
     "skipLibCheck": true,
@@ -32,6 +31,7 @@
     "src/server/repositories/metadata.repository.ts",
     "src/server/repositories/inventory.repository.ts",
     "src/server/repositories/vehicle.repository.ts",
+    "src/server/repositories/faction.repository.ts",
     "src/server/repositories/money.repository.ts",
     "src/server/repositories/log.repository.ts",
     "src/server/repositories/migration.repository.ts",
