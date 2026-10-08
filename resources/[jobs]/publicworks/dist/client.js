@@ -92,6 +92,8 @@ const PublicWorksConfig = Object.freeze({
         ]),
     }),
 });
+;
+"use strict";
 const PUBLICWORKS_CLIENT_RESOURCE = GetCurrentResourceName();
 const CONTROL_INTERACT = 38;
 const CONTROL_SECONDARY = 47;

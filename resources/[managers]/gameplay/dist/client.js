@@ -56,6 +56,8 @@ const GameplayConfig = Object.freeze({
         networkControlTimeoutMs: 120
     })
 });
+;
+"use strict";
 const PASSIVE_NPC_RELATIONSHIP_GROUPS = Object.freeze([
     'HATES_PLAYER',
     'AMBIENT_GANG_LOST',
@@ -159,6 +161,8 @@ on('entityDamaged', (victim, culprit, weapon) => {
         return;
     void reactToPlayerDamage(Number(victim), Number(weapon));
 });
+;
+"use strict";
 let handsUp = false;
 let pointing = false;
 let pointingStarting = false;
@@ -704,6 +708,8 @@ RegisterKeyMapping(`+${GameplayConfig.actions.pointing.command}`, GameplayConfig
 RegisterKeyMapping(GameplayConfig.crouch.leftCommand, GameplayConfig.crouch.description, 'keyboard', GameplayConfig.crouch.leftKey);
 RegisterKeyMapping(GameplayConfig.crouch.rightCommand, GameplayConfig.crouch.alternateDescription, 'keyboard', GameplayConfig.crouch.rightKey);
 RegisterKeyMapping('+rumble_sprint_guard', 'Rumble anti sprint-melee guard', 'keyboard', 'LSHIFT');
+;
+"use strict";
 const cameraZoomUnarmedHash = GetHashKey('WEAPON_UNARMED');
 const CAMERA_VIEW_CLOSE = 0;
 const CAMERA_VIEW_FAR = 2;
@@ -731,6 +737,8 @@ RegisterCommand(GameplayConfig.cameraZoom.zoomInCommand, () => changeCameraZoom(
 RegisterCommand(GameplayConfig.cameraZoom.zoomOutCommand, () => changeCameraZoom(1), false);
 RegisterKeyMapping(GameplayConfig.cameraZoom.zoomInCommand, GameplayConfig.cameraZoom.zoomInDescription, 'MOUSE_WHEEL', 'IOM_WHEEL_UP');
 RegisterKeyMapping(GameplayConfig.cameraZoom.zoomOutCommand, GameplayConfig.cameraZoom.zoomOutDescription, 'MOUSE_WHEEL', 'IOM_WHEEL_DOWN');
+;
+"use strict";
 on('onClientResourceStart', (resourceName) => {
     if (resourceName !== GetCurrentResourceName())
         return;

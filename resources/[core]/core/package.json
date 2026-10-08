@@ -6,11 +6,11 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "build": "npm run typecheck && npm run build:server && npm run build:client && npm run check:dist",
-    "build:server": "tsc -p tsconfig.server.json",
-    "build:client": "tsc -p tsconfig.client.json",
+    "build:server": "tsc -p tsconfig.server.json && node scripts/bundle.mjs tsconfig.server.json dist/server.js",
+    "build:client": "tsc -p tsconfig.client.json && node scripts/bundle.mjs tsconfig.client.json dist/client.js",
     "check:dist": "node --check dist/server.js && node --check dist/client.js",
-    "watch:server": "tsc -p tsconfig.server.json --watch",
-    "watch:client": "tsc -p tsconfig.client.json --watch",
+    "watch:server": "node scripts/watch.mjs tsconfig.server.json dist/server.js",
+    "watch:client": "node scripts/watch.mjs tsconfig.client.json dist/client.js",
     "verify": "npm run build && node tests/architecture.mjs && node tests/database-contract.mjs",
     "test": "node tests/architecture.mjs && node tests/database-contract.mjs"
   },

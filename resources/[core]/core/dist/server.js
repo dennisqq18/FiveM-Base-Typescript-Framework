@@ -1,4 +1,6 @@
 "use strict";
+;
+"use strict";
 var RumbleShared;
 (function (RumbleShared) {
     function clamp(value, minimum, maximum) {
@@ -29,6 +31,8 @@ var RumbleShared;
     }
     RumbleShared.vector4 = vector4;
 })(RumbleShared || (RumbleShared = {}));
+;
+"use strict";
 const APPEARANCE_VERSION = 1;
 const APPEARANCE_TATTOOS = Object.freeze([
     Object.freeze({ id: 'beach_head_1', label: 'Beach Head', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Head_000', female: '' }),
@@ -150,6 +154,8 @@ function sanitizeAppearance(input) {
 function hasSavedAppearance(value) {
     return Boolean(value && Number(value.version) === APPEARANCE_VERSION && (value.sex === 'male' || value.sex === 'female'));
 }
+;
+"use strict";
 const Config = Object.freeze({
     frameworkName: 'Rumble',
     version: '0.13.1',
@@ -192,6 +198,8 @@ const Config = Object.freeze({
     }),
     adminIdentifier: GetConvar('rumble_admin_identifier', '').trim(),
 });
+;
+"use strict";
 const DEFAULT_SPAWN = {
     x: -1037.72,
     y: -2737.88,
@@ -210,6 +218,8 @@ const ITEM_DEFINITIONS = Object.freeze({
     medkit: { name: 'medkit', label: 'Medkit', weight: 900, stackable: true, usable: true },
     armor: { name: 'armor', label: 'Body armor', weight: 2500, stackable: true, usable: true },
 });
+;
+"use strict";
 class CoreError extends Error {
     constructor(code, message, data = {}) {
         super(message);
@@ -309,6 +319,8 @@ function sanitizeReason(value, fallback = 'unknown') {
     const text = String(value ?? fallback).trim();
     return (text || fallback).slice(0, 128);
 }
+;
+"use strict";
 const databaseMetrics = {
     queries: 0,
     failed: 0,
@@ -385,6 +397,10 @@ function getDatabaseMetrics() {
         averageMs: databaseMetrics.queries > 0 ? Number((databaseMetrics.totalMs / databaseMetrics.queries).toFixed(2)) : 0,
     };
 }
+;
+"use strict";
+;
+"use strict";
 class InternalEventBus {
     constructor() {
         this.handlers = new Map();
@@ -413,6 +429,8 @@ class InternalEventBus {
     }
 }
 const CoreEvents = new InternalEventBus();
+;
+"use strict";
 class IdempotencyService {
     constructor() {
         this.records = new Map();
@@ -446,6 +464,8 @@ class IdempotencyService {
     }
 }
 const RpcIdempotency = new IdempotencyService();
+;
+"use strict";
 const coreModules = new Map();
 function registerCoreModule(nameInput, versionInput) {
     const name = String(nameInput ?? '').trim();
@@ -457,6 +477,8 @@ function registerCoreModule(nameInput, versionInput) {
 function getCoreModules() {
     return Array.from(coreModules.values()).map((entry) => ({ ...entry }));
 }
+;
+"use strict";
 class PlayerCache {
     constructor() {
         this.entries = new Map();
@@ -493,6 +515,8 @@ class PlayerCache {
         return Array.from(this.entries.values());
     }
 }
+;
+"use strict";
 class SecurityLayer {
     constructor() {
         this.limits = new Map();
@@ -541,6 +565,8 @@ class SecurityLayer {
     }
 }
 const Security = new SecurityLayer();
+;
+"use strict";
 class StructuredLogger {
     write(level, category, message, data) {
         const suffix = data === undefined ? '' : ` ${this.serialize(data)}`;
@@ -575,6 +601,8 @@ class StructuredLogger {
     }
 }
 const Logger = new StructuredLogger();
+;
+"use strict";
 class PlayerRepository {
     async upsert(identifier, playerName) {
         return await dbInsert(`INSERT INTO rumble_players (identifier, player_name)
@@ -592,6 +620,8 @@ class PlayerRepository {
         await dbUpdate('UPDATE rumble_players SET active_character_id = ?, last_seen = CURRENT_TIMESTAMP WHERE identifier = ?', [characterId, identifier]);
     }
 }
+;
+"use strict";
 const CHARACTER_COLUMNS = `
   id,
   player_identifier,
@@ -693,6 +723,8 @@ class CharacterRepository {
         await dbUpdate(`UPDATE rumble_characters SET ${column} = ? WHERE id = ? AND player_identifier = ?`, [amount, characterId, identifier]);
     }
 }
+;
+"use strict";
 class MetadataRepository {
     async list(characterId) {
         return await dbQuery('SELECT meta_key, meta_value FROM rumble_character_metadata WHERE character_id = ?', [characterId]);
@@ -706,6 +738,8 @@ class MetadataRepository {
         await dbUpdate('DELETE FROM rumble_character_metadata WHERE character_id = ? AND meta_key = ?', [characterId, key]);
     }
 }
+;
+"use strict";
 class InventoryRepository {
     async list(characterId) {
         return await dbQuery('SELECT id, slot, item_name, amount, metadata FROM rumble_inventory WHERE character_id = ? ORDER BY slot ASC', [characterId]);
@@ -730,6 +764,8 @@ class InventoryRepository {
         await dbUpdate('DELETE FROM rumble_inventory WHERE id = ? AND character_id = ?', [id, characterId]);
     }
 }
+;
+"use strict";
 class VehicleRepository {
     async list(characterId) {
         return await dbQuery('SELECT * FROM rumble_owned_vehicles WHERE character_id = ? ORDER BY id ASC', [characterId]);
@@ -756,6 +792,8 @@ class VehicleRepository {
         return await dbUpdate('DELETE FROM rumble_owned_vehicles WHERE plate = ? AND character_id = ?', [plate, characterId]);
     }
 }
+;
+"use strict";
 class FactionRepository {
     async getMembership(characterId) {
         return await dbSingle(`SELECT cf.faction_name,
@@ -784,6 +822,8 @@ class FactionRepository {
         await dbUpdate('DELETE FROM rumble_character_factions WHERE character_id = ?', [characterId]);
     }
 }
+;
+"use strict";
 class MoneyRepository {
     async record(characterId, account, amount, balanceAfter, reason, actorIdentifier) {
         await dbInsert(`INSERT INTO rumble_money_transactions
@@ -791,6 +831,8 @@ class MoneyRepository {
        VALUES (?, ?, ?, ?, ?, ?)`, [characterId, account, amount, balanceAfter, reason, actorIdentifier]);
     }
 }
+;
+"use strict";
 class LogRepository {
     async insert(data) {
         await dbInsert(`INSERT INTO rumble_logs
@@ -807,6 +849,8 @@ class LogRepository {
         ]);
     }
 }
+;
+"use strict";
 class MigrationRepository {
     async exists(version) {
         return Boolean(await dbSingle('SELECT version FROM rumble_migrations WHERE version = ? LIMIT 1', [version]));
@@ -819,6 +863,8 @@ class MigrationRepository {
         return Number(row?.version ?? 0);
     }
 }
+;
+"use strict";
 async function waitForDatabase() {
     for (let attempt = 1; attempt <= 30; attempt++) {
         try {
@@ -1132,6 +1178,8 @@ async function initializeDatabase() {
     databaseReady = true;
     Logger.info('DATABASE', 'Database ready', { migration });
 }
+;
+"use strict";
 const RESOURCE = GetCurrentResourceName();
 const MAX_HEALTH = 200;
 const MAX_ARMOR = 100;

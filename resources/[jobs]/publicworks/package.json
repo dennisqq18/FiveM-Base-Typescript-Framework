@@ -7,8 +7,8 @@
     "typecheck:server": "tsc -p tsconfig.server.json --noEmit",
     "typecheck:client": "tsc -p tsconfig.client.json --noEmit",
     "typecheck": "npm run typecheck:server && npm run typecheck:client",
-    "build:server": "tsc -p tsconfig.server.json",
-    "build:client": "tsc -p tsconfig.client.json",
+    "build:server": "tsc -p tsconfig.server.json && node scripts/bundle.mjs tsconfig.server.json dist/server.js",
+    "build:client": "tsc -p tsconfig.client.json && node scripts/bundle.mjs tsconfig.client.json dist/client.js",
     "build": "npm run typecheck && npm run build:server && npm run build:client && npm run check:dist",
     "check:dist": "node --check dist/server.js && node --check dist/client.js"
   },

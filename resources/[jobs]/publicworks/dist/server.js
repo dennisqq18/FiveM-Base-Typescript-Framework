@@ -92,6 +92,8 @@ const PublicWorksConfig = Object.freeze({
         ]),
     }),
 });
+;
+"use strict";
 const PUBLICWORKS_RESOURCE = GetCurrentResourceName();
 const activeJobs = new Map();
 const startCooldowns = new Map();

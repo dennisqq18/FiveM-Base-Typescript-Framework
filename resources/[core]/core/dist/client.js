@@ -1,4 +1,6 @@
 "use strict";
+;
+"use strict";
 var RumbleShared;
 (function (RumbleShared) {
     function clamp(value, minimum, maximum) {
@@ -29,6 +31,8 @@ var RumbleShared;
     }
     RumbleShared.vector4 = vector4;
 })(RumbleShared || (RumbleShared = {}));
+;
+"use strict";
 const APPEARANCE_VERSION = 1;
 const APPEARANCE_TATTOOS = Object.freeze([
     Object.freeze({ id: 'beach_head_1', label: 'Beach Head', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Head_000', female: '' }),
@@ -151,6 +155,8 @@ function sanitizeAppearance(input) {
 function hasSavedAppearance(value) {
     return Boolean(value && Number(value.version) === APPEARANCE_VERSION && (value.sex === 'male' || value.sex === 'female'));
 }
+;
+"use strict";
 const ClientConfig = Object.freeze({
     spawnCollisionTimeoutMs: 4000,
     defaultPlayerModel: 'mp_m_freemode_01',
@@ -219,6 +225,8 @@ const ClientConfig = Object.freeze({
         ]),
     }),
 });
+;
+"use strict";
 const clientDelay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 let availableSpawns = new Map();
 let characterCinematicCamera = 0;
