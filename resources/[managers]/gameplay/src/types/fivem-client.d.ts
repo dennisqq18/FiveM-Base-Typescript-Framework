@@ -1,4 +1,6 @@
+declare const Citizen: { invokeNative(hash: string, ...args: any[]): any };
 declare function on(eventName: string, handler: (...args: any[]) => void): void;
+declare function emitNet(eventName: string, ...args: any[]): void;
 declare function RegisterCommand(commandName: string, handler: (source: number, args: string[], rawCommand: string) => void, restricted: boolean): void;
 declare function RegisterKeyMapping(commandName: string, description: string, defaultMapper: string, defaultParameter: string): void;
 declare function PlayerId(): number;
@@ -40,6 +42,7 @@ declare function StopAnimTask(ped: number, animDictionary: string, animationName
 declare function ClearPedSecondaryTask(ped: number): void;
 declare function TaskMoveNetworkByName(ped: number, task: string, multiplier: number, allowOverrideCloneUpdate: boolean, animDict: string, flags: number): void;
 declare function RequestTaskMoveNetworkStateTransition(ped: number, name: string): void;
+declare function IsTaskMoveNetworkActive(ped: number): boolean;
 declare function SetTaskMoveNetworkSignalFloat(ped: number, signalName: string, value: number): void;
 declare function SetTaskMoveNetworkSignalBool(ped: number, signalName: string, value: boolean): void;
 declare function GetGameplayCamRelativePitch(): number;
@@ -51,19 +54,7 @@ declare function setTick(handler: () => void): number;
 declare function clearTick(tickId: number): void;
 
 declare function GetSelectedPedWeapon(ped: number): number;
-declare function SetCurrentPedWeapon(ped: number, weaponHash: number, equipNow: boolean): void;
 declare function IsPauseMenuActive(): boolean;
-declare function GetGameplayCamCoord(): [number, number, number];
-declare function GetGameplayCamRot(rotationOrder: number): [number, number, number];
-declare function GetFinalRenderedCamFov(): number;
-declare function GetFrameTime(): number;
-declare function CreateCamWithParams(camName: string, posX: number, posY: number, posZ: number, rotX: number, rotY: number, rotZ: number, fov: number, active: boolean, rotationOrder: number): number;
-declare function DoesCamExist(cam: number): boolean;
-declare function SetCamCoord(cam: number, posX: number, posY: number, posZ: number): void;
-declare function SetCamRot(cam: number, rotX: number, rotY: number, rotZ: number, rotationOrder: number): void;
-declare function SetCamFov(cam: number, fieldOfView: number): void;
-declare function RenderScriptCams(render: boolean, ease: boolean, easeTime: number, p3: boolean, p4: boolean): void;
-declare function DestroyCam(cam: number, thisScriptCheck: boolean): void;
 declare function RequestAnimSet(animSet: string): void;
 declare function HasAnimSetLoaded(animSet: string): boolean;
 declare function RemoveAnimSet(animSet: string): void;
@@ -86,3 +77,6 @@ declare function GetOffsetFromEntityInWorldCoords(entity: number, offsetX: numbe
 declare function StartShapeTestCapsule(x1: number, y1: number, z1: number, x2: number, y2: number, z2: number, radius: number, flags: number, entity: number, p9: number): number;
 declare function GetShapeTestResult(shapeTestHandle: number): [number, boolean, [number, number, number], [number, number, number], number];
 declare function GetFollowPedCamViewMode(): number;
+declare function SetFollowPedCamViewMode(viewMode: number): void;
+
+declare function SetPedStealthMovement(ped: number, toggle: boolean, action: string): void;

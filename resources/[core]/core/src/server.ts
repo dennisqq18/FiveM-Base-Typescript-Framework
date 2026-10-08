@@ -96,6 +96,7 @@ const rpcHandlers = new Map<string, (source: number, payload: any) => any>();
 const rpcValidators = new Map<string, (payload: any) => boolean>();
 const commandRegistry = new Map<string, { adminOnly: boolean }>();
 const activeCharacterOwners = new Map<number, number>();
+const appearanceEditingSources = new Set<number>();
 let databaseReady = false;
 let autosaveRunning = false;
 
@@ -647,11 +648,15 @@ async function selectCharacter(source: number, identifier: string, character: Ch
   ]);
 
   syncStateBag(session);
+  const requiresAppearance = !hasSavedAppearance(session.metadata.appearance);
+  appearanceEditingSources.delete(source);
+  if (requiresAppearance) appearanceEditingSources.add(source);
   emitNet('rumble:character:selected', source, {
     player: publicPlayer(session),
     metadata: publicMetadata(session),
     inventory: publicInventory(session),
     spawns: Object.values(SPAWNS),
+    requiresAppearance,
   });
   emit('rumble:server:characterLoaded', source, publicPlayer(session));
   Logger.info('PLAYER', 'Character selected', { source, playerId, stateId: character.stateId, citizenId: character.citizenId });
@@ -1296,6 +1301,43 @@ onNet('rumble:character:select', (characterId: number) => {
   });
 });
 
+onNet('rumble:character:appearanceSave', (rawAppearance: any) => {
+  const source = Number((globalThis as any).source);
+  const session = sessions.get(source);
+  if (!session || !allowRate(source, 'character:appearanceSave', 4, 5000)) return;
+  if (!appearanceEditingSources.has(source)) {
+    rejectSecurity(source, 'appearance_save_without_editor');
+    emitNet('rumble:character:appearanceError', source, 'The character creator is not active.');
+    return;
+  }
+
+  void (async () => {
+    const serializedInput = JSON.stringify(rawAppearance ?? {});
+    if (serializedInput.length > Config.maxMetadataBytes) {
+      emitNet('rumble:character:appearanceError', source, 'Appearance payload is too large.');
+      return;
+    }
+    const appearance = sanitizeAppearance(rawAppearance);
+    const serialized = JSON.stringify(appearance);
+    await metadataRepository.set(session.character.id, 'appearance', serialized);
+    session.metadata.appearance = appearance;
+    appearanceEditingSources.delete(source);
+    const selection = {
+      player: publicPlayer(session),
+      metadata: publicMetadata(session),
+      inventory: publicInventory(session),
+      spawns: Object.values(SPAWNS),
+      requiresAppearance: false,
+    };
+    emitNet('rumble:character:appearanceSaved', source, { appearance, selection });
+    emit('rumble:server:metadataChanged', source, 'appearance', appearance);
+    void logAction('character', 'appearance_saved', source, source, { characterId: session.character.id, sex: appearance.sex, tattoos: appearance.tattoos.length });
+  })().catch((error) => {
+    Logger.error('CHARACTER', 'Appearance save failed', { source, error: String(error) });
+    emitNet('rumble:character:appearanceError', source, 'Could not save the character appearance.');
+  });
+});
+
 onNet('rumble:player:spawned', (spawnId: string) => {
   const source = Number((globalThis as any).source);
   const session = sessions.get(source);
@@ -1480,6 +1522,7 @@ on('playerDropped', () => {
   sessions.delete(source);
   loadingPlayers.delete(source);
   creatingCharacters.delete(source);
+  appearanceEditingSources.delete(source);
   Security.clearSource(source);
   RpcIdempotency.clearSource(source);
   frozenPlayers.delete(source);
@@ -1864,6 +1907,23 @@ RegisterCommand('ara', (source) => {
   message(source, `Revive sent to ${revived} player(s) within 10m, including yourself.`, 'success');
 }, false);
 
+RegisterCommand('creator', (source) => {
+  if (source === 0 || !requireAdmin(source)) return;
+  const session = sessions.get(source);
+  if (!session) return;
+  session.spawned = false;
+  appearanceEditingSources.add(source);
+  syncStateBag(session);
+  emitNet('rumble:character:selected', source, {
+    player: publicPlayer(session),
+    metadata: publicMetadata(session),
+    inventory: publicInventory(session),
+    spawns: Object.values(SPAWNS),
+    requiresAppearance: true,
+  });
+  message(source, 'Character creator opened. Save the appearance to continue.', 'info');
+}, false);
+
 RegisterCommand('fly', (source) => {
   if (source === 0 || !requireAdmin(source)) return;
   void logAction('admin', 'command:fly', source, source, {});
@@ -2244,6 +2304,31 @@ exports('GetCapabilities', () => ({
   features: { ...Config.features },
   managers: ['runtime', 'sessions', 'permissions', 'observability', 'gameplay'],
 }));
+exports('GetPlayerDiagnostics', () => Array.from(sessions.values()).map((session) => ({
+  source: session.source,
+  playerId: session.playerId,
+  name: session.playerName,
+  ping: Number((globalThis as any).GetPlayerPing?.(session.source) ?? 0),
+  spawned: session.spawned,
+  dirty: Array.from(session.dirty),
+  revision: session.revision,
+  savedRevision: session.savedRevision,
+  character: {
+    id: session.character.id,
+    stateId: session.character.stateId,
+    citizenId: session.character.citizenId,
+    name: `${session.character.firstName} ${session.character.lastName}`,
+    health: session.character.health,
+    armor: session.character.armor,
+    hunger: session.character.hunger,
+    thirst: session.character.thirst,
+    position: { ...session.character.position },
+  },
+  faction: session.faction ? { ...session.faction } : null,
+  appearanceSaved: hasSavedAppearance(session.metadata.appearance),
+  deathState: String(session.metadata.deathState ?? 'alive'),
+})));
+
 exports('GetDiagnostics', () => ({
   version: Config.version,
   apiVersion: Config.apiVersion,

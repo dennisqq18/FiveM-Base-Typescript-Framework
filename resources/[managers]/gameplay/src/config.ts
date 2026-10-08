@@ -1,5 +1,6 @@
 const GameplayConfig = Object.freeze({
   actions: Object.freeze({
+    monitorIntervalMs: 125,
     handsUp: Object.freeze({
       command: 'rumble_handsup',
       key: 'X',
@@ -8,14 +9,18 @@ const GameplayConfig = Object.freeze({
       animName: 'handsup_standing_base',
       blendInSpeed: 8.0,
       blendOutSpeed: -8.0,
-      flags: 49
+      flags: 49,
+      animCheckIntervalMs: 375
     }),
     pointing: Object.freeze({
-      command: 'rumble_point',
+      // New command id intentionally gives existing FiveM profiles a fresh default B bind.
+      command: 'rumble_point_hold_v2',
       key: 'B',
-      description: 'Hold B to point',
+      description: 'Hold B to point with your finger',
       animDict: 'anim@mp_point',
-      taskName: 'task_mp_pointing'
+      taskName: 'task_mp_pointing',
+      signalIntervalMs: 34,
+      collisionProbeIntervalMs: 170
     })
   }),
   crouch: Object.freeze({
@@ -37,12 +42,8 @@ const GameplayConfig = Object.freeze({
     enabled: true,
     zoomInCommand: 'rumble_camera_zoom_in',
     zoomOutCommand: 'rumble_camera_zoom_out',
-    zoomInDescription: 'Zoom in while unarmed',
-    zoomOutDescription: 'Zoom out while unarmed',
-    maxLevel: 4,
-    fovStep: 8.0,
-    minimumFov: 22.0,
-    interpolationSpeed: 13.0
+    zoomInDescription: 'Zoom camera in while unarmed',
+    zoomOutDescription: 'Zoom camera out while unarmed'
   }),
   world: Object.freeze({
     disableWantedSystem: true,

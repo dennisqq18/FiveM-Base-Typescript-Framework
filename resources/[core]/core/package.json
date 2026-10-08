@@ -1,6 +1,6 @@
 {
   "name": "core",
-  "version": "0.12.2",
+  "version": "0.13.2",
   "private": true,
   "description": "Standalone TypeScript FiveM framework core",
   "scripts": {

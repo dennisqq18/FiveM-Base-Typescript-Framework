@@ -29,9 +29,137 @@ var RumbleShared;
     }
     RumbleShared.vector4 = vector4;
 })(RumbleShared || (RumbleShared = {}));
+const APPEARANCE_VERSION = 1;
+const APPEARANCE_TATTOOS = Object.freeze([
+    Object.freeze({ id: 'beach_head_1', label: 'Beach Head', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Head_000', female: '' }),
+    Object.freeze({ id: 'beach_neck_1', label: 'Beach Neck', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Neck_000', female: 'MP_Bea_F_Neck_000' }),
+    Object.freeze({ id: 'beach_back_1', label: 'Beach Back', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Back_000', female: 'MP_Bea_F_Back_000' }),
+    Object.freeze({ id: 'beach_chest_1', label: 'Beach Chest', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Chest_000', female: 'MP_Bea_F_Chest_000' }),
+    Object.freeze({ id: 'beach_chest_2', label: 'Beach Chest II', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Chest_001', female: 'MP_Bea_F_Chest_001' }),
+    Object.freeze({ id: 'beach_stomach_1', label: 'Beach Stomach', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Stom_000', female: 'MP_Bea_F_Stom_000' }),
+    Object.freeze({ id: 'beach_stomach_2', label: 'Beach Stomach II', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Stom_001', female: 'MP_Bea_F_Stom_001' }),
+    Object.freeze({ id: 'biker_demon', label: 'Demon Rider', collection: 'mpbiker_overlays', male: 'MP_MP_Biker_Tat_000_M', female: 'MP_MP_Biker_Tat_000_F' }),
+    Object.freeze({ id: 'airraces_bombs', label: 'Bombs Away', collection: 'mpairraces_overlays', male: 'MP_Airraces_Tattoo_006_M', female: 'MP_Airraces_Tattoo_006_F' }),
+    Object.freeze({ id: 'airraces_eagle', label: 'Eagle Eyes', collection: 'mpairraces_overlays', male: 'MP_Airraces_Tattoo_007_M', female: 'MP_Airraces_Tattoo_007_F' }),
+    Object.freeze({ id: 'xmas2017_thor', label: 'Thor & Goblin', collection: 'mpchristmas2017_overlays', male: 'MP_Christmas2017_Tattoo_000_M', female: 'MP_Christmas2017_Tattoo_000_F' }),
+    Object.freeze({ id: 'xmas2017_kabuto', label: 'Kabuto', collection: 'mpchristmas2017_overlays', male: 'MP_Christmas2017_Tattoo_002_M', female: 'MP_Christmas2017_Tattoo_002_F' }),
+]);
+const clampAppearanceInt = (value, minimum, maximum, fallback = minimum) => {
+    const numeric = Math.floor(Number(value));
+    return Number.isFinite(numeric) ? Math.max(minimum, Math.min(maximum, numeric)) : fallback;
+};
+const clampAppearanceFloat = (value, minimum, maximum, fallback = 0) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.max(minimum, Math.min(maximum, numeric)) : fallback;
+};
+const sanitizeDrawable = (value, allowNone = false) => ({
+    drawable: clampAppearanceInt(value === null || value === void 0 ? void 0 : value.drawable, allowNone ? -1 : 0, 255, allowNone ? -1 : 0),
+    texture: clampAppearanceInt(value === null || value === void 0 ? void 0 : value.texture, 0, 63, 0),
+});
+function createDefaultAppearance(sex = 'male') {
+    return {
+        version: APPEARANCE_VERSION,
+        sex,
+        parents: { shapeFirst: 0, shapeSecond: 21, skinFirst: 0, skinSecond: 21, shapeMix: 0.5, skinMix: 0.5 },
+        faceFeatures: Array.from({ length: 20 }, () => 0),
+        eyeColor: 0,
+        hair: { style: 0, texture: 0, color: 0, highlight: 0 },
+        beard: { style: -1, opacity: 1, color: 0 },
+        eyebrows: { style: 0, opacity: 1, color: 0 },
+        clothes: {
+            mask: { drawable: 0, texture: 0 },
+            arms: { drawable: 0, texture: 0 },
+            pants: { drawable: 0, texture: 0 },
+            bag: { drawable: 0, texture: 0 },
+            shoes: { drawable: 0, texture: 0 },
+            accessory: { drawable: 0, texture: 0 },
+            undershirt: { drawable: 0, texture: 0 },
+            armor: { drawable: 0, texture: 0 },
+            decals: { drawable: 0, texture: 0 },
+            torso: { drawable: 0, texture: 0 },
+        },
+        props: {
+            hat: { drawable: -1, texture: 0 },
+            glasses: { drawable: -1, texture: 0 },
+            ears: { drawable: -1, texture: 0 },
+            watch: { drawable: -1, texture: 0 },
+            bracelet: { drawable: -1, texture: 0 },
+        },
+        tattoos: [],
+    };
+}
+function sanitizeAppearance(input) {
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u, _v, _w, _x, _y, _z, _0, _1, _2, _3, _4, _5, _6;
+    const sex = (input === null || input === void 0 ? void 0 : input.sex) === 'female' ? 'female' : 'male';
+    const fallback = createDefaultAppearance(sex);
+    const features = Array.isArray(input === null || input === void 0 ? void 0 : input.faceFeatures) ? input.faceFeatures : [];
+    const allowedTattooIds = new Set(APPEARANCE_TATTOOS.map((tattoo) => tattoo.id));
+    const tattoos = Array.isArray(input === null || input === void 0 ? void 0 : input.tattoos)
+        ? Array.from(new Set(input.tattoos.map((entry) => String(entry)).filter((entry) => allowedTattooIds.has(entry)))).slice(0, 12)
+        : [];
+    return {
+        version: APPEARANCE_VERSION,
+        sex,
+        parents: {
+            shapeFirst: clampAppearanceInt((_a = input === null || input === void 0 ? void 0 : input.parents) === null || _a === void 0 ? void 0 : _a.shapeFirst, 0, 45, fallback.parents.shapeFirst),
+            shapeSecond: clampAppearanceInt((_b = input === null || input === void 0 ? void 0 : input.parents) === null || _b === void 0 ? void 0 : _b.shapeSecond, 0, 45, fallback.parents.shapeSecond),
+            skinFirst: clampAppearanceInt((_c = input === null || input === void 0 ? void 0 : input.parents) === null || _c === void 0 ? void 0 : _c.skinFirst, 0, 45, fallback.parents.skinFirst),
+            skinSecond: clampAppearanceInt((_d = input === null || input === void 0 ? void 0 : input.parents) === null || _d === void 0 ? void 0 : _d.skinSecond, 0, 45, fallback.parents.skinSecond),
+            shapeMix: clampAppearanceFloat((_e = input === null || input === void 0 ? void 0 : input.parents) === null || _e === void 0 ? void 0 : _e.shapeMix, 0, 1, fallback.parents.shapeMix),
+            skinMix: clampAppearanceFloat((_f = input === null || input === void 0 ? void 0 : input.parents) === null || _f === void 0 ? void 0 : _f.skinMix, 0, 1, fallback.parents.skinMix),
+        },
+        faceFeatures: Array.from({ length: 20 }, (_, index) => clampAppearanceFloat(features[index], -1, 1, 0)),
+        eyeColor: clampAppearanceInt(input === null || input === void 0 ? void 0 : input.eyeColor, 0, 31, 0),
+        hair: {
+            style: clampAppearanceInt((_g = input === null || input === void 0 ? void 0 : input.hair) === null || _g === void 0 ? void 0 : _g.style, 0, 255, 0),
+            texture: clampAppearanceInt((_h = input === null || input === void 0 ? void 0 : input.hair) === null || _h === void 0 ? void 0 : _h.texture, 0, 63, 0),
+            color: clampAppearanceInt((_j = input === null || input === void 0 ? void 0 : input.hair) === null || _j === void 0 ? void 0 : _j.color, 0, 63, 0),
+            highlight: clampAppearanceInt((_k = input === null || input === void 0 ? void 0 : input.hair) === null || _k === void 0 ? void 0 : _k.highlight, 0, 63, 0),
+        },
+        beard: {
+            style: clampAppearanceInt((_l = input === null || input === void 0 ? void 0 : input.beard) === null || _l === void 0 ? void 0 : _l.style, -1, 63, -1),
+            opacity: clampAppearanceFloat((_m = input === null || input === void 0 ? void 0 : input.beard) === null || _m === void 0 ? void 0 : _m.opacity, 0, 1, 1),
+            color: clampAppearanceInt((_o = input === null || input === void 0 ? void 0 : input.beard) === null || _o === void 0 ? void 0 : _o.color, 0, 63, 0),
+        },
+        eyebrows: {
+            style: clampAppearanceInt((_p = input === null || input === void 0 ? void 0 : input.eyebrows) === null || _p === void 0 ? void 0 : _p.style, -1, 63, 0),
+            opacity: clampAppearanceFloat((_q = input === null || input === void 0 ? void 0 : input.eyebrows) === null || _q === void 0 ? void 0 : _q.opacity, 0, 1, 1),
+            color: clampAppearanceInt((_r = input === null || input === void 0 ? void 0 : input.eyebrows) === null || _r === void 0 ? void 0 : _r.color, 0, 63, 0),
+        },
+        clothes: {
+            mask: sanitizeDrawable((_s = input === null || input === void 0 ? void 0 : input.clothes) === null || _s === void 0 ? void 0 : _s.mask),
+            arms: sanitizeDrawable((_t = input === null || input === void 0 ? void 0 : input.clothes) === null || _t === void 0 ? void 0 : _t.arms),
+            pants: sanitizeDrawable((_u = input === null || input === void 0 ? void 0 : input.clothes) === null || _u === void 0 ? void 0 : _u.pants),
+            bag: sanitizeDrawable((_v = input === null || input === void 0 ? void 0 : input.clothes) === null || _v === void 0 ? void 0 : _v.bag),
+            shoes: sanitizeDrawable((_w = input === null || input === void 0 ? void 0 : input.clothes) === null || _w === void 0 ? void 0 : _w.shoes),
+            accessory: sanitizeDrawable((_x = input === null || input === void 0 ? void 0 : input.clothes) === null || _x === void 0 ? void 0 : _x.accessory),
+            undershirt: sanitizeDrawable((_y = input === null || input === void 0 ? void 0 : input.clothes) === null || _y === void 0 ? void 0 : _y.undershirt),
+            armor: sanitizeDrawable((_z = input === null || input === void 0 ? void 0 : input.clothes) === null || _z === void 0 ? void 0 : _z.armor),
+            decals: sanitizeDrawable((_0 = input === null || input === void 0 ? void 0 : input.clothes) === null || _0 === void 0 ? void 0 : _0.decals),
+            torso: sanitizeDrawable((_1 = input === null || input === void 0 ? void 0 : input.clothes) === null || _1 === void 0 ? void 0 : _1.torso),
+        },
+        props: {
+            hat: sanitizeDrawable((_2 = input === null || input === void 0 ? void 0 : input.props) === null || _2 === void 0 ? void 0 : _2.hat, true),
+            glasses: sanitizeDrawable((_3 = input === null || input === void 0 ? void 0 : input.props) === null || _3 === void 0 ? void 0 : _3.glasses, true),
+            ears: sanitizeDrawable((_4 = input === null || input === void 0 ? void 0 : input.props) === null || _4 === void 0 ? void 0 : _4.ears, true),
+            watch: sanitizeDrawable((_5 = input === null || input === void 0 ? void 0 : input.props) === null || _5 === void 0 ? void 0 : _5.watch, true),
+            bracelet: sanitizeDrawable((_6 = input === null || input === void 0 ? void 0 : input.props) === null || _6 === void 0 ? void 0 : _6.bracelet, true),
+        },
+        tattoos,
+    };
+}
+function hasSavedAppearance(value) {
+    return Boolean(value && Number(value.version) === APPEARANCE_VERSION && (value.sex === 'male' || value.sex === 'female'));
+}
 const ClientConfig = Object.freeze({
     spawnCollisionTimeoutMs: 4000,
     defaultPlayerModel: 'mp_m_freemode_01',
+    femalePlayerModel: 'mp_f_freemode_01',
+    appearanceStudio: Object.freeze({
+        position: Object.freeze({ x: 402.92, y: -996.78, z: -99.00, heading: 180.0 }),
+        camera: Object.freeze({ x: 402.92, y: -998.55, z: -98.45, fov: 38.0 }),
+        bodyCamera: Object.freeze({ x: 402.92, y: -999.20, z: -98.80, fov: 52.0 }),
+    }),
     modelLoadTimeoutMs: 10000,
     characterCinematic: Object.freeze({
         fov: 48.0,
@@ -106,6 +234,13 @@ let loaded = false;
 let registrationOpen = false;
 let selectorOpen = false;
 let spawnOpen = false;
+let appearanceOpen = false;
+let appearanceCamera = 0;
+let appearanceCameraView = 'face';
+let appearancePreviewToken = 0;
+let appearanceDraft = null;
+let currentAppearance = null;
+let pendingSelectionPayload = null;
 let deathState = 'alive';
 let inventoryState = [];
 let registrationProfile = {};
@@ -126,7 +261,7 @@ function chat(text, kind = 'info') {
     });
 }
 function refreshNuiFocus() {
-    SetNuiFocus(registrationOpen || selectorOpen || spawnOpen, registrationOpen || selectorOpen || spawnOpen);
+    SetNuiFocus(registrationOpen || selectorOpen || spawnOpen || appearanceOpen, registrationOpen || selectorOpen || spawnOpen || appearanceOpen);
 }
 async function ensureScreenVisible() {
     ShutdownLoadingScreen();
@@ -138,7 +273,7 @@ async function ensureScreenVisible() {
     }
 }
 function isCharacterMenuOpen() {
-    return registrationOpen || selectorOpen || spawnOpen;
+    return registrationOpen || selectorOpen || spawnOpen || appearanceOpen;
 }
 function lerp(a, b, t) {
     return a + (b - a) * t;
@@ -249,8 +384,175 @@ async function prepareCharacterMenuScene() {
     hideCharacterMenuPed();
     startCharacterCinematic();
 }
+const APPEARANCE_COMPONENT_IDS = Object.freeze({ mask: 1, arms: 3, pants: 4, bag: 5, shoes: 6, accessory: 7, undershirt: 8, armor: 9, decals: 10, torso: 11 });
+const APPEARANCE_PROP_IDS = Object.freeze({ hat: 0, glasses: 1, ears: 2, watch: 6, bracelet: 7 });
+function clampPedDrawable(ped, componentId, drawable) {
+    const count = Math.max(1, GetNumberOfPedDrawableVariations(ped, componentId));
+    return Math.max(0, Math.min(count - 1, Math.floor(drawable)));
+}
+function clampPedTexture(ped, componentId, drawable, texture) {
+    const count = Math.max(1, GetNumberOfPedTextureVariations(ped, componentId, drawable));
+    return Math.max(0, Math.min(count - 1, Math.floor(texture)));
+}
+function applyAppearanceToPed(ped, rawAppearance) {
+    const appearance = sanitizeAppearance(rawAppearance);
+    SetPedHeadBlendData(ped, appearance.parents.shapeFirst, appearance.parents.shapeSecond, 0, appearance.parents.skinFirst, appearance.parents.skinSecond, 0, appearance.parents.shapeMix, appearance.parents.skinMix, 0.0, false);
+    for (let index = 0; index < appearance.faceFeatures.length; index++)
+        SetPedFaceFeature(ped, index, appearance.faceFeatures[index]);
+    SetPedEyeColor(ped, appearance.eyeColor);
+    const hairDrawable = clampPedDrawable(ped, 2, appearance.hair.style);
+    const hairTexture = clampPedTexture(ped, 2, hairDrawable, appearance.hair.texture);
+    appearance.hair.style = hairDrawable;
+    appearance.hair.texture = hairTexture;
+    SetPedComponentVariation(ped, 2, hairDrawable, hairTexture, 0);
+    SetPedHairColor(ped, appearance.hair.color, appearance.hair.highlight);
+    const beardIndex = appearance.beard.style < 0 ? 255 : appearance.beard.style;
+    SetPedHeadOverlay(ped, 1, beardIndex, appearance.beard.style < 0 ? 0.0 : appearance.beard.opacity);
+    if (appearance.beard.style >= 0)
+        SetPedHeadOverlayColor(ped, 1, 1, appearance.beard.color, appearance.beard.color);
+    const eyebrowIndex = appearance.eyebrows.style < 0 ? 255 : appearance.eyebrows.style;
+    SetPedHeadOverlay(ped, 2, eyebrowIndex, appearance.eyebrows.style < 0 ? 0.0 : appearance.eyebrows.opacity);
+    if (appearance.eyebrows.style >= 0)
+        SetPedHeadOverlayColor(ped, 2, 1, appearance.eyebrows.color, appearance.eyebrows.color);
+    for (const [key, componentId] of Object.entries(APPEARANCE_COMPONENT_IDS)) {
+        const item = appearance.clothes[key];
+        const drawable = clampPedDrawable(ped, componentId, item.drawable);
+        const texture = clampPedTexture(ped, componentId, drawable, item.texture);
+        item.drawable = drawable;
+        item.texture = texture;
+        SetPedComponentVariation(ped, componentId, drawable, texture, 0);
+    }
+    for (const [key, propId] of Object.entries(APPEARANCE_PROP_IDS)) {
+        const item = appearance.props[key];
+        if (item.drawable < 0) {
+            ClearPedProp(ped, propId);
+            continue;
+        }
+        const drawableCount = Math.max(0, GetNumberOfPedPropDrawableVariations(ped, propId));
+        if (drawableCount <= 0) {
+            item.drawable = -1;
+            item.texture = 0;
+            ClearPedProp(ped, propId);
+            continue;
+        }
+        const drawable = Math.max(0, Math.min(drawableCount - 1, item.drawable));
+        const textureCount = Math.max(1, GetNumberOfPedPropTextureVariations(ped, propId, drawable));
+        const texture = Math.max(0, Math.min(textureCount - 1, item.texture));
+        item.drawable = drawable;
+        item.texture = texture;
+        SetPedPropIndex(ped, propId, drawable, texture, true);
+    }
+    ClearPedDecorations(ped);
+    for (const tattooId of appearance.tattoos) {
+        const tattoo = APPEARANCE_TATTOOS.find((entry) => entry.id === tattooId);
+        if (!tattoo)
+            continue;
+        const overlay = appearance.sex === 'female' ? tattoo.female : tattoo.male;
+        if (!overlay)
+            continue;
+        AddPedDecorationFromHashes(ped, GetHashKey(tattoo.collection), GetHashKey(overlay));
+    }
+    return appearance;
+}
+function getAppearanceOptions(ped, appearance) {
+    const components = {};
+    for (const [key, componentId] of Object.entries(APPEARANCE_COMPONENT_IDS)) {
+        const item = appearance.clothes[key];
+        const drawables = Math.max(1, GetNumberOfPedDrawableVariations(ped, componentId));
+        const drawable = Math.max(0, Math.min(drawables - 1, item.drawable));
+        components[key] = { drawables, textures: Math.max(1, GetNumberOfPedTextureVariations(ped, componentId, drawable)) };
+    }
+    const props = {};
+    for (const [key, propId] of Object.entries(APPEARANCE_PROP_IDS)) {
+        const item = appearance.props[key];
+        const drawables = Math.max(0, GetNumberOfPedPropDrawableVariations(ped, propId));
+        const drawable = Math.max(0, Math.min(Math.max(0, drawables - 1), Math.max(0, item.drawable)));
+        props[key] = { drawables, textures: drawables > 0 ? Math.max(1, GetNumberOfPedPropTextureVariations(ped, propId, drawable)) : 1 };
+    }
+    const hairDrawables = Math.max(1, GetNumberOfPedDrawableVariations(ped, 2));
+    const hairDrawable = Math.max(0, Math.min(hairDrawables - 1, appearance.hair.style));
+    return {
+        parents: 46,
+        hair: { drawables: hairDrawables, textures: Math.max(1, GetNumberOfPedTextureVariations(ped, 2, hairDrawable)), colors: 64 },
+        components,
+        props,
+    };
+}
+function destroyAppearanceCamera(immediate = false) {
+    if (appearanceCamera && DoesCamExist(appearanceCamera)) {
+        SetCamActive(appearanceCamera, false);
+        RenderScriptCams(false, !immediate, immediate ? 0 : 250, true, true);
+        DestroyCam(appearanceCamera, false);
+    }
+    appearanceCamera = 0;
+}
+function setAppearanceCameraView(view) {
+    appearanceCameraView = view;
+    const ped = PlayerPedId();
+    if (!ped || !DoesEntityExist(ped))
+        return;
+    const cameraConfig = view === 'body' ? ClientConfig.appearanceStudio.bodyCamera : ClientConfig.appearanceStudio.camera;
+    if (!appearanceCamera || !DoesCamExist(appearanceCamera)) {
+        appearanceCamera = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA', cameraConfig.x, cameraConfig.y, cameraConfig.z, 0, 0, 0, cameraConfig.fov, true, 2);
+        SetCamActive(appearanceCamera, true);
+        RenderScriptCams(true, true, 250, true, true);
+    }
+    else {
+        SetCamCoord(appearanceCamera, cameraConfig.x, cameraConfig.y, cameraConfig.z);
+        SetCamFov(appearanceCamera, cameraConfig.fov);
+    }
+    PointCamAtEntity(appearanceCamera, ped, 0.0, 0.0, view === 'body' ? 0.15 : 0.67, true);
+}
+function closeAppearanceCreator(immediate = false) {
+    appearanceOpen = false;
+    appearancePreviewToken++;
+    destroyAppearanceCamera(immediate);
+    SendNuiMessage(JSON.stringify({ type: 'appearance', active: false }));
+    refreshNuiFocus();
+}
+async function openAppearanceCreator(data) {
+    var _a;
+    pendingSelectionPayload = data;
+    registrationOpen = false;
+    selectorOpen = false;
+    spawnOpen = false;
+    appearanceOpen = true;
+    loaded = false;
+    characterSceneToken++;
+    destroyCharacterCinematic(true);
+    ClearFocus();
+    await ensureScreenVisible();
+    const initial = hasSavedAppearance((_a = data === null || data === void 0 ? void 0 : data.metadata) === null || _a === void 0 ? void 0 : _a.appearance) ? sanitizeAppearance(data.metadata.appearance) : createDefaultAppearance('male');
+    appearanceDraft = initial;
+    currentAppearance = initial;
+    const ped = await ensureMultiplayerPlayerModel(false, initial.sex);
+    if (!ped || !DoesEntityExist(ped))
+        throw new Error('The creator model could not be loaded.');
+    const studio = ClientConfig.appearanceStudio.position;
+    RequestCollisionAtCoord(studio.x, studio.y, studio.z);
+    SetEntityCoordsNoOffset(ped, studio.x, studio.y, studio.z, false, false, false);
+    SetEntityHeading(ped, studio.heading);
+    SetEntityVisible(ped, true, false);
+    SetEntityCollision(ped, true, true);
+    SetEntityInvincible(ped, true);
+    FreezeEntityPosition(ped, true);
+    appearanceDraft = applyAppearanceToPed(ped, initial);
+    setAppearanceCameraView('face');
+    refreshNuiFocus();
+    SendNuiMessage(JSON.stringify({ type: 'registration', active: false }));
+    SendNuiMessage(JSON.stringify({ type: 'selector', active: false }));
+    SendNuiMessage(JSON.stringify({ type: 'spawn', active: false }));
+    SendNuiMessage(JSON.stringify({
+        type: 'appearance',
+        active: true,
+        appearance: appearanceDraft,
+        options: getAppearanceOptions(ped, appearanceDraft),
+        tattoos: APPEARANCE_TATTOOS.map((tattoo) => ({ id: tattoo.id, label: tattoo.label, available: Boolean(initial.sex === 'female' ? tattoo.female : tattoo.male) })),
+    }));
+}
 function openRegistration(profile = {}) {
     var _a, _b, _c, _d, _e;
+    closeAppearanceCreator(true);
     registrationProfile = { ...profile };
     registrationOpen = true;
     selectorOpen = false;
@@ -276,6 +578,7 @@ function closeRegistration() {
     refreshNuiFocus();
 }
 function openSelector(data) {
+    closeAppearanceCreator(true);
     registrationOpen = false;
     spawnOpen = false;
     selectorOpen = true;
@@ -292,6 +595,7 @@ function closeSelector() {
     refreshNuiFocus();
 }
 function openSpawn(data) {
+    closeAppearanceCreator(true);
     const spawns = Array.isArray(data === null || data === void 0 ? void 0 : data.spawns) ? data.spawns : [];
     availableSpawns = new Map();
     for (const spawn of spawns) {
@@ -322,8 +626,9 @@ function closeSpawn() {
     SendNuiMessage(JSON.stringify({ type: 'spawn', active: false }));
     refreshNuiFocus();
 }
-async function ensureMultiplayerPlayerModel(force = false) {
-    const model = GetHashKey(ClientConfig.defaultPlayerModel);
+async function ensureMultiplayerPlayerModel(force = false, sex = 'male') {
+    const modelName = sex === 'female' ? ClientConfig.femalePlayerModel : ClientConfig.defaultPlayerModel;
+    const model = GetHashKey(modelName);
     const currentPed = await waitForPlayerPed();
     if (!force && DoesEntityExist(currentPed) && GetEntityModel(currentPed) === model)
         return currentPed;
@@ -351,11 +656,13 @@ async function spawnCharacter(data, position, spawnId = 'last') {
     closeRegistration();
     closeSelector();
     closeSpawn();
+    closeAppearanceCreator(true);
     characterSceneToken++;
     destroyCharacterCinematic();
     loaded = false;
     await ensureScreenVisible();
-    const ped = await ensureMultiplayerPlayerModel();
+    const appearance = currentAppearance ? sanitizeAppearance(currentAppearance) : createDefaultAppearance('male');
+    const ped = await ensureMultiplayerPlayerModel(false, appearance.sex);
     if (!DoesEntityExist(ped))
         throw new Error('Player ped does not exist.');
     const p = position !== null && position !== void 0 ? position : data.character.position;
@@ -365,6 +672,7 @@ async function spawnCharacter(data, position, spawnId = 'last') {
     RequestCollisionAtCoord(p.x, p.y, p.z);
     SetFocusPosAndVel(p.x, p.y, p.z, 0, 0, 0);
     NetworkResurrectLocalPlayer(p.x, p.y, p.z, p.heading, true, false);
+    applyAppearanceToPed(ped, appearance);
     SetEntityCoordsNoOffset(ped, p.x, p.y, p.z, false, false, false);
     SetEntityHeading(ped, p.heading);
     ResetEntityAlpha(ped);
@@ -399,6 +707,7 @@ onNet('rumble:player:loadError', (text) => {
     registrationOpen = false;
     selectorOpen = false;
     spawnOpen = false;
+    closeAppearanceCreator(true);
     characterSceneToken++;
     destroyCharacterCinematic(true);
     ClearFocus();
@@ -459,6 +768,64 @@ on('__cfx_nui:characterNew', (_data, callback) => {
     openRegistration({ mode: 'create', firstName: '', lastName: '' });
     callback({ accepted: true });
 });
+RegisterNuiCallbackType('appearancePreview');
+on('__cfx_nui:appearancePreview', (data, callback) => {
+    if (!appearanceOpen) {
+        callback({ accepted: false });
+        return;
+    }
+    const next = sanitizeAppearance(data === null || data === void 0 ? void 0 : data.appearance);
+    const token = ++appearancePreviewToken;
+    callback({ accepted: true });
+    void (async () => {
+        const ped = await ensureMultiplayerPlayerModel(false, next.sex);
+        if (!appearanceOpen || token !== appearancePreviewToken)
+            return;
+        const studio = ClientConfig.appearanceStudio.position;
+        SetEntityCoordsNoOffset(ped, studio.x, studio.y, studio.z, false, false, false);
+        SetEntityHeading(ped, studio.heading);
+        SetEntityInvincible(ped, true);
+        FreezeEntityPosition(ped, true);
+        appearanceDraft = applyAppearanceToPed(ped, next);
+        currentAppearance = appearanceDraft;
+        setAppearanceCameraView(appearanceCameraView);
+        SendNuiMessage(JSON.stringify({
+            type: 'appearanceOptions',
+            options: getAppearanceOptions(ped, appearanceDraft),
+            appearance: appearanceDraft,
+            tattoos: APPEARANCE_TATTOOS.map((tattoo) => ({ id: tattoo.id, label: tattoo.label, available: Boolean(appearanceDraft.sex === 'female' ? tattoo.female : tattoo.male) })),
+        }));
+    })().catch((error) => console.error('[RUMBLE][APPEARANCE] preview failed', error));
+});
+RegisterNuiCallbackType('appearanceSave');
+on('__cfx_nui:appearanceSave', (data, callback) => {
+    var _a;
+    if (!appearanceOpen || !playerData) {
+        callback({ accepted: false });
+        return;
+    }
+    const appearance = sanitizeAppearance((_a = data === null || data === void 0 ? void 0 : data.appearance) !== null && _a !== void 0 ? _a : appearanceDraft);
+    appearanceDraft = appearance;
+    emitNet('rumble:character:appearanceSave', appearance);
+    callback({ accepted: true });
+});
+RegisterNuiCallbackType('appearanceCamera');
+on('__cfx_nui:appearanceCamera', (data, callback) => {
+    var _a;
+    if (!appearanceOpen) {
+        callback({ accepted: false });
+        return;
+    }
+    const ped = PlayerPedId();
+    const action = String((_a = data === null || data === void 0 ? void 0 : data.action) !== null && _a !== void 0 ? _a : '');
+    if (action === 'face' || action === 'body')
+        setAppearanceCameraView(action);
+    if ((action === 'left' || action === 'right') && ped && DoesEntityExist(ped)) {
+        const delta = action === 'left' ? -15.0 : 15.0;
+        SetEntityHeading(ped, GetEntityHeading(ped) + delta);
+    }
+    callback({ accepted: true });
+});
 RegisterNuiCallbackType('spawnSelect');
 on('__cfx_nui:spawnSelect', (data, callback) => {
     var _a;
@@ -492,18 +859,45 @@ on('__cfx_nui:spawnSelect', (data, callback) => {
     });
 });
 onNet('rumble:character:selected', (data) => {
-    var _a, _b, _c;
+    var _a, _b, _c, _d;
     playerData = (_a = data === null || data === void 0 ? void 0 : data.player) !== null && _a !== void 0 ? _a : null;
     inventoryState = Array.isArray(data === null || data === void 0 ? void 0 : data.inventory) ? data.inventory : [];
     deathState = String((_c = (_b = data === null || data === void 0 ? void 0 : data.metadata) === null || _b === void 0 ? void 0 : _b.deathState) !== null && _c !== void 0 ? _c : 'alive');
+    pendingSelectionPayload = data;
     if (!playerData)
         return;
-    void ensureMultiplayerPlayerModel().then(() => {
+    const savedAppearance = hasSavedAppearance((_d = data === null || data === void 0 ? void 0 : data.metadata) === null || _d === void 0 ? void 0 : _d.appearance) ? sanitizeAppearance(data.metadata.appearance) : null;
+    currentAppearance = savedAppearance;
+    appearanceDraft = savedAppearance;
+    if (Boolean(data === null || data === void 0 ? void 0 : data.requiresAppearance) || !savedAppearance) {
+        void openAppearanceCreator(data).catch((error) => {
+            console.error('[RUMBLE][APPEARANCE] failed to open creator', error);
+            chat('Character creator failed to open. Check F8.', 'error');
+        });
+        return;
+    }
+    void ensureMultiplayerPlayerModel(false, savedAppearance.sex).then((ped) => {
+        applyAppearanceToPed(ped, savedAppearance);
         openSpawn(data);
     }).catch((error) => {
         console.error('[RUMBLE][CLIENT][MODEL] Failed to prepare multiplayer ped', error);
-        chat('Could not prepare the multiplayer character. Check the F8 console.', 'error');
+        chat('Could not prepare the multiplayer character. Check F8.', 'error');
     });
+});
+onNet('rumble:character:appearanceSaved', (data) => {
+    var _a, _b;
+    if (!playerData)
+        return;
+    const appearance = sanitizeAppearance((_a = data === null || data === void 0 ? void 0 : data.appearance) !== null && _a !== void 0 ? _a : appearanceDraft);
+    currentAppearance = appearance;
+    appearanceDraft = appearance;
+    const payload = (_b = data === null || data === void 0 ? void 0 : data.selection) !== null && _b !== void 0 ? _b : pendingSelectionPayload;
+    closeAppearanceCreator(true);
+    if (payload)
+        openSpawn(payload);
+});
+onNet('rumble:character:appearanceError', (text) => {
+    SendNuiMessage(JSON.stringify({ type: 'appearanceError', message: String(text || 'Could not save the appearance.') }));
 });
 onNet('rumble:player:loaded', (data) => {
     playerData = data;
@@ -1021,6 +1415,7 @@ on('onClientResourceStart', (resourceName) => {
         emit('chat:addSuggestion', '/spectate', 'Spectate a player or turn spectate off.', [{ name: 'id/off', help: 'Permanent ID or off' }]);
         emit('chat:addSuggestion', '/entity', 'Inspect the entity in front of the camera.');
         emit('chat:addSuggestion', '/vehinfo', 'Show information about the current vehicle.');
+        emit('chat:addSuggestion', '/creator', 'Open the character creator (admin).');
         emit('chat:addSuggestion', '/healthcheck', 'Run the core health check.');
         emit('chat:addSuggestion', '/id', "Show the permanent player ID and the character's State ID.");
         emit('chat:addSuggestion', '/money', 'Show cash and card balance.');
@@ -1077,6 +1472,7 @@ on('onClientResourceStop', (resourceName) => {
     closeRegistration();
     closeSelector();
     closeSpawn();
+    closeAppearanceCreator(true);
     for (const pending of rpcPending.values()) {
         clearTimeout(pending.timer);
         pending.reject(new Error('Rumble resource stopped.'));

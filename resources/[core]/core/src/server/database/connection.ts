@@ -28,10 +28,17 @@ function databaseLabel(query: string): string {
   return query.replace(/\s+/g, ' ').trim().slice(0, 120);
 }
 
+// Server runtimes usually provide performance.now(); older Node/FXServer builds
+// can lack that global, so diagnostics always have a safe Date.now fallback.
+const databaseClockNow = () =>
+  typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
+
 async function runDatabaseCall<T>(query: string, operation: () => Promise<T>): Promise<T> {
   const current = Date.now();
   if (databaseMetrics.circuitOpenUntil > current) throw new CoreError('DATABASE_CIRCUIT_OPEN', 'Database circuit breaker is open.', { retryAfterMs: databaseMetrics.circuitOpenUntil - current });
-  const started = performance.now();
+  const started = databaseClockNow();
   databaseMetrics.queries++;
   let failed = false;
   try {
@@ -45,7 +52,7 @@ async function runDatabaseCall<T>(query: string, operation: () => Promise<T>): P
     if (databaseMetrics.consecutiveFailures >= Config.databaseCircuitFailureThreshold) databaseMetrics.circuitOpenUntil = Date.now() + Config.databaseCircuitOpenMs;
     throw error;
   } finally {
-    const durationMs = Number((performance.now() - started).toFixed(2));
+    const durationMs = Number((databaseClockNow() - started).toFixed(2));
     databaseMetrics.totalMs += durationMs;
     databaseMetrics.maxMs = Math.max(databaseMetrics.maxMs, durationMs);
     const slow = durationMs >= Config.slowQueryThresholdMs;

@@ -1,13 +1,13 @@
 declare function GetCurrentResourceName(): string;
 declare function GetInvokingResource(): string | null;
 declare function GetResourceState(resourceName: string): string;
+declare function GetNumResources(): number;
+declare function GetResourceByFindIndex(index: number): string | null;
 declare function GetPlayerName(source: number): string | null;
-declare function GetNumPlayerIdentifiers(source: number): number;
-declare function GetPlayerIdentifier(source: number, index: number): string | null;
 declare function RegisterCommand(name: string, handler: (source: number, args: string[], rawCommand: string) => void, restricted: boolean): void;
-declare function CancelEvent(): void;
 declare function emit(eventName: string, ...args: any[]): void;
 declare function emitNet(eventName: string, target: number, ...args: any[]): void;
 declare function on(eventName: string, handler: (...args: any[]) => void): void;
+declare function onNet(eventName: string, handler: (...args: any[]) => void): void;
 declare function exports(name: string, handler: (...args: any[]) => any): void;
 declare const process: { memoryUsage(): { rss: number; heapTotal: number; heapUsed: number; external: number } };

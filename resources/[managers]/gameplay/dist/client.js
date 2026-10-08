@@ -1,6 +1,7 @@
 "use strict";
 const GameplayConfig = Object.freeze({
     actions: Object.freeze({
+        monitorIntervalMs: 125,
         handsUp: Object.freeze({
             command: 'rumble_handsup',
             key: 'X',
@@ -9,14 +10,17 @@ const GameplayConfig = Object.freeze({
             animName: 'handsup_standing_base',
             blendInSpeed: 8.0,
             blendOutSpeed: -8.0,
-            flags: 49
+            flags: 49,
+            animCheckIntervalMs: 375
         }),
         pointing: Object.freeze({
-            command: 'rumble_point',
+            command: 'rumble_point_hold_v2',
             key: 'B',
-            description: 'Hold B to point',
+            description: 'Hold B to point with your finger',
             animDict: 'anim@mp_point',
-            taskName: 'task_mp_pointing'
+            taskName: 'task_mp_pointing',
+            signalIntervalMs: 34,
+            collisionProbeIntervalMs: 170
         })
     }),
     crouch: Object.freeze({
@@ -38,12 +42,8 @@ const GameplayConfig = Object.freeze({
         enabled: true,
         zoomInCommand: 'rumble_camera_zoom_in',
         zoomOutCommand: 'rumble_camera_zoom_out',
-        zoomInDescription: 'Zoom in while unarmed',
-        zoomOutDescription: 'Zoom out while unarmed',
-        maxLevel: 4,
-        fovStep: 8.0,
-        minimumFov: 22.0,
-        interpolationSpeed: 13.0
+        zoomInDescription: 'Zoom camera in while unarmed',
+        zoomOutDescription: 'Zoom camera out while unarmed'
     }),
     world: Object.freeze({
         disableWantedSystem: true,
@@ -161,16 +161,75 @@ on('entityDamaged', (victim, culprit, weapon) => {
 });
 let handsUp = false;
 let pointing = false;
+let pointingStarting = false;
 let crouched = false;
+let sprintGuardHeld = false;
+let sprintCombatActive = false;
+let sprintProbeTimer = null;
+let actionMonitorTimer = null;
+let pointingSignalTimer = null;
 let handsUpToken = 0;
 let pointingToken = 0;
 let crouchToken = 0;
+let actionTick = null;
+let pointingPed = 0;
+let pointingStartedAt = 0;
+let lastPointingShapeAt = 0;
+let lastPointingBlocked = false;
+let pointingShapeHandle = 0;
+let lastHandsUpAnimCheckAt = 0;
+let lastPerfSampleSentAt = 0;
 const actionDelay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 const clampGameplayValue = (value, minimum, maximum) => Math.min(maximum, Math.max(minimum, value));
 const unarmedWeaponHash = GetHashKey('WEAPON_UNARMED');
-const COMBAT_CONTROLS = Object.freeze([24, 25, 37, 44, 140, 141, 142, 143, 257, 263, 264]);
-const SPRINT_MELEE_CONTROLS = Object.freeze([24, 140, 141, 142, 257, 263, 264]);
+const localPlayerId = PlayerId();
+const ACTION_COMBAT_CONTROLS = Object.freeze([24, 25, 140, 141, 142, 257]);
+const SPRINT_MELEE_CONTROLS = Object.freeze([24, 140, 141, 142, 257]);
+const gameplayPerf = {
+    windowStartedAt: Date.now(),
+    callbacks: 0,
+    busyMs: 0,
+    maxMs: 0,
+    sampledCallbacks: 0,
+};
+const beginSampledGameplayWork = (sampleEvery = 64) => {
+    gameplayPerf.callbacks++;
+    gameplayPerf.sampledCallbacks++;
+    return gameplayPerf.sampledCallbacks % sampleEvery === 0 ? Date.now() : -1;
+};
+const finishSampledGameplayWork = (startedAt, sampleEvery = 64) => {
+    if (startedAt < 0)
+        return;
+    const duration = Math.max(0, Date.now() - startedAt);
+    gameplayPerf.busyMs += duration * sampleEvery;
+    gameplayPerf.maxMs = Math.max(gameplayPerf.maxMs, duration);
+};
+const recordGameplayCallback = () => {
+    gameplayPerf.callbacks++;
+};
+const flushGameplayPerf = (force = false) => {
+    const now = Date.now();
+    if (gameplayPerf.callbacks <= 0)
+        return;
+    if (!force && now - lastPerfSampleSentAt < 5000)
+        return;
+    const windowMs = Math.max(1, now - gameplayPerf.windowStartedAt);
+    emitNet('rumble:observability:clientResourceSample', {
+        resource: GetCurrentResourceName(),
+        windowMs,
+        callbacks: gameplayPerf.callbacks,
+        busyMs: Number(gameplayPerf.busyMs.toFixed(3)),
+        maxCallbackMs: Number(gameplayPerf.maxMs.toFixed(3)),
+        active: handsUp || pointing || crouched || sprintCombatActive,
+    });
+    gameplayPerf.windowStartedAt = now;
+    gameplayPerf.callbacks = 0;
+    gameplayPerf.busyMs = 0;
+    gameplayPerf.maxMs = 0;
+    lastPerfSampleSentAt = now;
+};
 const canUseUpperBodyAction = (ped) => !!ped &&
+    DoesEntityExist(ped) &&
     !IsEntityDead(ped) &&
     !IsPedRagdoll(ped) &&
     !IsPedInAnyVehicle(ped, true) &&
@@ -199,43 +258,211 @@ const loadGameplayAnimSet = async (animSet, token) => {
     }
     return token === crouchToken;
 };
-const suppressCombat = (ped, controls) => {
-    DisablePlayerFiring(PlayerId(), true);
+const shouldRunActionTick = () => handsUp || pointing || crouched || sprintCombatActive;
+const shouldRunActionMonitor = () => handsUp || pointing || crouched || sprintCombatActive;
+const suppressCombatFrame = (controls) => {
+    DisablePlayerFiring(localPlayerId, true);
     for (const control of controls)
         DisableControlAction(0, control, true);
-    if (GetSelectedPedWeapon(ped) === unarmedWeaponHash) {
-        DisableControlAction(0, 24, true);
+};
+const updateFrameControls = () => {
+    const perfStarted = beginSampledGameplayWork(64);
+    try {
+        if (handsUp || pointing) {
+            suppressCombatFrame(ACTION_COMBAT_CONTROLS);
+        }
+        else if (sprintCombatActive) {
+            suppressCombatFrame(SPRINT_MELEE_CONTROLS);
+        }
+        if (crouched) {
+            DisableControlAction(0, 21, true);
+            DisableControlAction(0, 22, true);
+        }
+    }
+    finally {
+        finishSampledGameplayWork(perfStarted, 64);
+    }
+};
+const ensureActionTick = () => {
+    if (actionTick !== null || !shouldRunActionTick())
+        return;
+    actionTick = setTick(updateFrameControls);
+};
+const stopActionTickIfIdle = () => {
+    if (actionTick !== null && !shouldRunActionTick()) {
+        clearTick(actionTick);
+        actionTick = null;
     }
 };
 const stopHandsUp = () => {
     if (!handsUp)
         return;
     const ped = PlayerPedId();
-    StopAnimTask(ped, GameplayConfig.actions.handsUp.animDict, GameplayConfig.actions.handsUp.animName, 2.5);
+    if (ped && DoesEntityExist(ped)) {
+        StopAnimTask(ped, GameplayConfig.actions.handsUp.animDict, GameplayConfig.actions.handsUp.animName, 2.5);
+    }
     RemoveAnimDict(GameplayConfig.actions.handsUp.animDict);
     handsUp = false;
 };
 const stopPointing = () => {
-    if (!pointing)
+    if (!pointing && !pointingPed)
         return;
-    const ped = PlayerPedId();
-    RequestTaskMoveNetworkStateTransition(ped, 'Stop');
-    ClearPedSecondaryTask(ped);
-    SetPedConfigFlag(ped, 36, false);
-    SetPedCurrentWeaponVisible(ped, true, true, true, true);
+    const ped = pointingPed || PlayerPedId();
+    if (pointingSignalTimer)
+        clearTimeout(pointingSignalTimer);
+    pointingSignalTimer = null;
+    pointingShapeHandle = 0;
+    if (ped && DoesEntityExist(ped)) {
+        if (IsTaskMoveNetworkActive(ped))
+            Citizen.invokeNative('0xD01015C7316AE176', ped, 'Stop');
+        ClearPedSecondaryTask(ped);
+        SetPedConfigFlag(ped, 36, false);
+        if (!IsPedInAnyVehicle(ped, true))
+            SetPedCurrentWeaponVisible(ped, true, true, true, true);
+    }
     RemoveAnimDict(GameplayConfig.actions.pointing.animDict);
     pointing = false;
+    pointingPed = 0;
+    pointingStartedAt = 0;
+    lastPointingShapeAt = 0;
+    lastPointingBlocked = false;
 };
 const stopCrouch = () => {
     if (!crouched)
         return;
     const ped = PlayerPedId();
-    ResetPedMovementClipset(ped, GameplayConfig.crouch.blendOutSpeed);
-    ResetPedStrafeClipset(ped);
+    if (ped && DoesEntityExist(ped)) {
+        ResetPedMovementClipset(ped, GameplayConfig.crouch.blendOutSpeed);
+        ResetPedStrafeClipset(ped);
+        SetPedStealthMovement(ped, false, 'DEFAULT_ACTION');
+    }
     RemoveAnimSet(GameplayConfig.crouch.movementClipset);
     RemoveAnimSet(GameplayConfig.crouch.strafeClipset);
     crouched = false;
 };
+const sprintGuardNeedsFrameSuppression = (ped) => {
+    if (!sprintGuardHeld || !ped || !DoesEntityExist(ped) || IsEntityDead(ped))
+        return false;
+    if (GetSelectedPedWeapon(ped) !== unarmedWeaponHash)
+        return false;
+    return IsPedSprinting(ped) || IsPedRunning(ped) || GetEntitySpeed(ped) >= GameplayConfig.combat.sprintMeleeMinimumSpeed;
+};
+const scheduleSprintProbe = (delayMs = 55) => {
+    if (!sprintGuardHeld || sprintCombatActive || sprintProbeTimer)
+        return;
+    sprintProbeTimer = setTimeout(() => {
+        sprintProbeTimer = null;
+        if (!sprintGuardHeld || sprintCombatActive)
+            return;
+        recordGameplayCallback();
+        const ped = PlayerPedId();
+        if (sprintGuardNeedsFrameSuppression(ped)) {
+            sprintCombatActive = true;
+            ensureActionTick();
+            ensureActionMonitor();
+            return;
+        }
+        scheduleSprintProbe(55);
+    }, Math.max(25, delayMs));
+};
+const pollPointingShapeResult = () => {
+    if (!pointingShapeHandle)
+        return;
+    const [state, blocked] = GetShapeTestResult(pointingShapeHandle);
+    if (state === 2) {
+        lastPointingBlocked = blocked;
+        pointingShapeHandle = 0;
+    }
+    else if (state === 0) {
+        pointingShapeHandle = 0;
+    }
+};
+const startPointingShapeProbe = (ped, relativeHeading, now) => {
+    if (pointingShapeHandle || now - lastPointingShapeAt < GameplayConfig.actions.pointing.collisionProbeIntervalMs)
+        return;
+    lastPointingShapeAt = now;
+    const radians = relativeHeading * (Math.PI / 180.0);
+    const cosHeading = Math.cos(radians);
+    const sinHeading = Math.sin(radians);
+    const normalizedHeading = (clampGameplayValue(relativeHeading, -180.0, 180.0) + 180.0) / 360.0;
+    const side = 0.4 * normalizedHeading + 0.3;
+    const [x, y, z] = GetOffsetFromEntityInWorldCoords(ped, (cosHeading * -0.2) - (sinHeading * side), (sinHeading * -0.2) + (cosHeading * side), 0.6);
+    pointingShapeHandle = StartShapeTestCapsule(x, y, z - 0.2, x, y, z + 0.2, 0.4, 95, ped, 7);
+};
+const updatePointingSignals = () => {
+    pointingSignalTimer = null;
+    if (!pointing || !pointingPed)
+        return;
+    recordGameplayCallback();
+    const ped = pointingPed;
+    if (!DoesEntityExist(ped) || !IsTaskMoveNetworkActive(ped)) {
+        schedulePointingSignals(GameplayConfig.actions.pointing.signalIntervalMs);
+        return;
+    }
+    const now = Date.now();
+    const rawPitch = clampGameplayValue(GetGameplayCamRelativePitch(), -70.0, 42.0);
+    const rawHeading = clampGameplayValue(GetGameplayCamRelativeHeading(), -180.0, 180.0);
+    const pitch = (rawPitch + 70.0) / 112.0;
+    const heading = (rawHeading + 180.0) / 360.0;
+    pollPointingShapeResult();
+    startPointingShapeProbe(ped, rawHeading, now);
+    SetTaskMoveNetworkSignalFloat(ped, 'Pitch', pitch);
+    SetTaskMoveNetworkSignalFloat(ped, 'Heading', 1.0 - heading);
+    SetTaskMoveNetworkSignalBool(ped, 'isBlocked', lastPointingBlocked);
+    SetTaskMoveNetworkSignalBool(ped, 'isFirstPerson', GetFollowPedCamViewMode() === 4);
+    schedulePointingSignals(GameplayConfig.actions.pointing.signalIntervalMs);
+};
+function schedulePointingSignals(delayMs = GameplayConfig.actions.pointing.signalIntervalMs) {
+    if (!pointing || pointingSignalTimer)
+        return;
+    pointingSignalTimer = setTimeout(updatePointingSignals, Math.max(25, delayMs));
+}
+const monitorGameplayState = () => {
+    actionMonitorTimer = null;
+    recordGameplayCallback();
+    const ped = PlayerPedId();
+    const now = Date.now();
+    if (handsUp) {
+        if (!canUseUpperBodyAction(ped)) {
+            handsUpToken++;
+            stopHandsUp();
+        }
+        else if (now - lastHandsUpAnimCheckAt >= GameplayConfig.actions.handsUp.animCheckIntervalMs) {
+            lastHandsUpAnimCheckAt = now;
+            if (!IsEntityPlayingAnim(ped, GameplayConfig.actions.handsUp.animDict, GameplayConfig.actions.handsUp.animName, 3)) {
+                TaskPlayAnim(ped, GameplayConfig.actions.handsUp.animDict, GameplayConfig.actions.handsUp.animName, GameplayConfig.actions.handsUp.blendInSpeed, GameplayConfig.actions.handsUp.blendOutSpeed, -1, GameplayConfig.actions.handsUp.flags, 0.0, false, false, false);
+            }
+        }
+    }
+    if (pointing) {
+        const wrongPed = pointingPed !== ped;
+        const taskMissing = now - pointingStartedAt > 250 && !IsTaskMoveNetworkActive(pointingPed);
+        if (wrongPed || !canUseUpperBodyAction(ped) || taskMissing) {
+            pointingToken++;
+            stopPointing();
+        }
+    }
+    if (crouched && !canUseCrouch(ped)) {
+        crouchToken++;
+        stopCrouch();
+    }
+    if (sprintCombatActive && !sprintGuardNeedsFrameSuppression(ped)) {
+        sprintCombatActive = false;
+        scheduleSprintProbe(55);
+    }
+    stopActionTickIfIdle();
+    if (shouldRunActionMonitor()) {
+        ensureActionMonitor();
+    }
+    else {
+        flushGameplayPerf();
+    }
+};
+function ensureActionMonitor() {
+    if (actionMonitorTimer || !shouldRunActionMonitor())
+        return;
+    actionMonitorTimer = setTimeout(monitorGameplayState, GameplayConfig.actions.monitorIntervalMs);
+}
 const stopAllGameplayActions = () => {
     handsUpToken++;
     pointingToken++;
@@ -243,6 +470,39 @@ const stopAllGameplayActions = () => {
     stopHandsUp();
     stopPointing();
     stopCrouch();
+    sprintGuardHeld = false;
+    sprintCombatActive = false;
+    if (sprintProbeTimer)
+        clearTimeout(sprintProbeTimer);
+    if (actionMonitorTimer)
+        clearTimeout(actionMonitorTimer);
+    if (pointingSignalTimer)
+        clearTimeout(pointingSignalTimer);
+    sprintProbeTimer = null;
+    actionMonitorTimer = null;
+    pointingSignalTimer = null;
+    stopActionTickIfIdle();
+    flushGameplayPerf(true);
+};
+const stopHandsUpFromInput = () => {
+    handsUpToken++;
+    stopHandsUp();
+    stopActionTickIfIdle();
+    if (!shouldRunActionMonitor() && actionMonitorTimer) {
+        clearTimeout(actionMonitorTimer);
+        actionMonitorTimer = null;
+    }
+    flushGameplayPerf();
+};
+const stopPointingFromInput = () => {
+    pointingToken++;
+    stopPointing();
+    stopActionTickIfIdle();
+    if (!shouldRunActionMonitor() && actionMonitorTimer) {
+        clearTimeout(actionMonitorTimer);
+        actionMonitorTimer = null;
+    }
+    flushGameplayPerf();
 };
 const startHandsUp = async () => {
     if (handsUp)
@@ -266,52 +526,84 @@ const startHandsUp = async () => {
         return;
     }
     TaskPlayAnim(currentPed, GameplayConfig.actions.handsUp.animDict, GameplayConfig.actions.handsUp.animName, GameplayConfig.actions.handsUp.blendInSpeed, GameplayConfig.actions.handsUp.blendOutSpeed, -1, GameplayConfig.actions.handsUp.flags, 0.0, false, false, false);
+    lastHandsUpAnimCheckAt = Date.now();
     handsUp = true;
-};
-const stopHandsUpFromInput = () => {
-    handsUpToken++;
-    stopHandsUp();
-};
-const updatePointingSignals = (ped) => {
-    const pitch = (clampGameplayValue(GetGameplayCamRelativePitch(), -70.0, 42.0) + 70.0) / 112.0;
-    const heading = (clampGameplayValue(GetGameplayCamRelativeHeading(), -180.0, 180.0) + 180.0) / 360.0;
-    const [x, y, z] = GetOffsetFromEntityInWorldCoords(ped, -0.2, 0.4, 0.3);
-    const shapeTest = StartShapeTestCapsule(x, y, z - 0.2, x, y, z + 0.2, 0.4, 95, ped, 7);
-    const [, blocked] = GetShapeTestResult(shapeTest);
-    SetTaskMoveNetworkSignalFloat(ped, 'Pitch', pitch);
-    SetTaskMoveNetworkSignalFloat(ped, 'Heading', 1.0 - heading);
-    SetTaskMoveNetworkSignalBool(ped, 'isBlocked', blocked);
-    SetTaskMoveNetworkSignalBool(ped, 'isFirstPerson', GetFollowPedCamViewMode() === 4);
+    recordGameplayCallback();
+    ensureActionTick();
+    ensureActionMonitor();
 };
 const startPointing = async () => {
-    if (pointing)
+    if (pointing || pointingStarting)
         return;
-    const ped = PlayerPedId();
-    if (!canUseUpperBodyAction(ped))
-        return;
-    handsUpToken++;
-    stopHandsUp();
-    crouchToken++;
-    stopCrouch();
-    const token = ++pointingToken;
-    const loaded = await loadGameplayAnimDict(GameplayConfig.actions.pointing.animDict, () => token === pointingToken);
-    if (!loaded) {
+    pointingStarting = true;
+    try {
+        const ped = PlayerPedId();
+        if (!canUseUpperBodyAction(ped))
+            return;
+        handsUpToken++;
+        stopHandsUp();
+        crouchToken++;
+        stopCrouch();
+        const token = ++pointingToken;
+        const loaded = await loadGameplayAnimDict(GameplayConfig.actions.pointing.animDict, () => token === pointingToken);
+        if (!loaded) {
+            RemoveAnimDict(GameplayConfig.actions.pointing.animDict);
+            return;
+        }
+        const currentPed = PlayerPedId();
+        if (!canUseUpperBodyAction(currentPed) || token !== pointingToken) {
+            RemoveAnimDict(GameplayConfig.actions.pointing.animDict);
+            return;
+        }
+        SetPedCurrentWeaponVisible(currentPed, false, true, true, true);
+        SetPedConfigFlag(currentPed, 36, true);
+        Citizen.invokeNative('0x2D537BA194896636', currentPed, GameplayConfig.actions.pointing.taskName, 0.5, false, GameplayConfig.actions.pointing.animDict, 24);
+        pointing = true;
+        pointingPed = currentPed;
+        pointingStartedAt = Date.now();
+        lastPointingShapeAt = 0;
+        lastPointingBlocked = false;
+        pointingShapeHandle = 0;
+        recordGameplayCallback();
         RemoveAnimDict(GameplayConfig.actions.pointing.animDict);
-        return;
+        await actionDelay(40);
+        if (token !== pointingToken || !pointing || pointingPed !== PlayerPedId())
+            return;
+        if (!IsTaskMoveNetworkActive(pointingPed)) {
+            RequestAnimDict(GameplayConfig.actions.pointing.animDict);
+            let attempts = 0;
+            while (!HasAnimDictLoaded(GameplayConfig.actions.pointing.animDict) && attempts < 8 && token === pointingToken) {
+                attempts++;
+                await actionDelay(25);
+            }
+            if (token !== pointingToken || !pointing)
+                return;
+            Citizen.invokeNative('0x2D537BA194896636', pointingPed, GameplayConfig.actions.pointing.taskName, 0.5, false, GameplayConfig.actions.pointing.animDict, 24);
+            RemoveAnimDict(GameplayConfig.actions.pointing.animDict);
+            await actionDelay(40);
+            if (token !== pointingToken || !pointing)
+                return;
+            if (!IsTaskMoveNetworkActive(pointingPed)) {
+                RequestAnimDict(GameplayConfig.actions.pointing.animDict);
+                let fallbackAttempts = 0;
+                while (!HasAnimDictLoaded(GameplayConfig.actions.pointing.animDict) && fallbackAttempts < 8 && token === pointingToken) {
+                    fallbackAttempts++;
+                    await actionDelay(25);
+                }
+                if (token !== pointingToken || !pointing)
+                    return;
+                TaskMoveNetworkByName(pointingPed, GameplayConfig.actions.pointing.taskName, 0.5, false, GameplayConfig.actions.pointing.animDict, 24);
+                RemoveAnimDict(GameplayConfig.actions.pointing.animDict);
+            }
+        }
+        pointingStartedAt = Date.now();
+        schedulePointingSignals(0);
+        ensureActionTick();
+        ensureActionMonitor();
     }
-    const currentPed = PlayerPedId();
-    if (!canUseUpperBodyAction(currentPed) || token !== pointingToken) {
-        RemoveAnimDict(GameplayConfig.actions.pointing.animDict);
-        return;
+    finally {
+        pointingStarting = false;
     }
-    SetPedCurrentWeaponVisible(currentPed, false, true, true, true);
-    SetPedConfigFlag(currentPed, 36, true);
-    TaskMoveNetworkByName(currentPed, GameplayConfig.actions.pointing.taskName, 0.5, false, GameplayConfig.actions.pointing.animDict, 24);
-    pointing = true;
-};
-const stopPointingFromInput = () => {
-    pointingToken++;
-    stopPointing();
 };
 const startCrouch = async () => {
     if (crouched)
@@ -323,6 +615,7 @@ const startCrouch = async () => {
     pointingToken++;
     stopHandsUp();
     stopPointing();
+    SetPedStealthMovement(ped, false, 'DEFAULT_ACTION');
     const token = ++crouchToken;
     const movementLoaded = await loadGameplayAnimSet(GameplayConfig.crouch.movementClipset, token);
     if (!movementLoaded) {
@@ -341,190 +634,101 @@ const startCrouch = async () => {
         RemoveAnimSet(GameplayConfig.crouch.strafeClipset);
         return;
     }
+    SetPedStealthMovement(currentPed, false, 'DEFAULT_ACTION');
     SetPedMovementClipset(currentPed, GameplayConfig.crouch.movementClipset, GameplayConfig.crouch.blendInSpeed);
     SetPedStrafeClipset(currentPed, GameplayConfig.crouch.strafeClipset);
     crouched = true;
+    recordGameplayCallback();
+    ensureActionTick();
+    ensureActionMonitor();
 };
 const toggleCrouch = () => {
+    const ped = PlayerPedId();
+    if (ped) {
+        SetPedStealthMovement(ped, false, 'DEFAULT_ACTION');
+        setTimeout(() => {
+            const currentPed = PlayerPedId();
+            if (currentPed)
+                SetPedStealthMovement(currentPed, false, 'DEFAULT_ACTION');
+        }, 0);
+    }
     if (crouched) {
         crouchToken++;
         stopCrouch();
+        stopActionTickIfIdle();
+        if (!shouldRunActionMonitor() && actionMonitorTimer) {
+            clearTimeout(actionMonitorTimer);
+            actionMonitorTimer = null;
+        }
+        flushGameplayPerf();
         return;
     }
     void startCrouch();
 };
-const updateGameplayControls = () => {
-    DisableControlAction(0, 36, true);
-    const ped = PlayerPedId();
-    if (!ped || IsEntityDead(ped)) {
-        if (handsUp || pointing || crouched)
-            stopAllGameplayActions();
-        return;
-    }
-    if (handsUp) {
-        if (!canUseUpperBodyAction(ped)) {
-            stopHandsUpFromInput();
-        }
-        else {
-            suppressCombat(ped, COMBAT_CONTROLS);
-            if (!IsEntityPlayingAnim(ped, GameplayConfig.actions.handsUp.animDict, GameplayConfig.actions.handsUp.animName, 3)) {
-                TaskPlayAnim(ped, GameplayConfig.actions.handsUp.animDict, GameplayConfig.actions.handsUp.animName, GameplayConfig.actions.handsUp.blendInSpeed, GameplayConfig.actions.handsUp.blendOutSpeed, -1, GameplayConfig.actions.handsUp.flags, 0.0, false, false, false);
-            }
-        }
-    }
-    if (pointing) {
-        if (!canUseUpperBodyAction(ped)) {
-            stopPointingFromInput();
-        }
-        else {
-            suppressCombat(ped, COMBAT_CONTROLS);
-            updatePointingSignals(ped);
-        }
-    }
-    if (crouched) {
-        if (!canUseCrouch(ped)) {
-            crouchToken++;
-            stopCrouch();
-        }
-        else {
-            DisableControlAction(0, 21, true);
-            DisableControlAction(0, 22, true);
-        }
-    }
-    const sprintHeld = IsControlPressed(0, 21);
-    const movingFast = IsPedSprinting(ped) || IsPedRunning(ped) || GetEntitySpeed(ped) >= GameplayConfig.combat.sprintMeleeMinimumSpeed;
-    if (sprintHeld && movingFast && GetSelectedPedWeapon(ped) === unarmedWeaponHash) {
-        suppressCombat(ped, SPRINT_MELEE_CONTROLS);
-    }
-};
-RegisterCommand(`+${GameplayConfig.actions.handsUp.command}`, () => {
-    void startHandsUp();
-}, false);
-RegisterCommand(`-${GameplayConfig.actions.handsUp.command}`, () => {
-    stopHandsUpFromInput();
-}, false);
-RegisterCommand(`+${GameplayConfig.actions.pointing.command}`, () => {
-    void startPointing();
-}, false);
-RegisterCommand(`-${GameplayConfig.actions.pointing.command}`, () => {
-    stopPointingFromInput();
-}, false);
+RegisterCommand(`+${GameplayConfig.actions.handsUp.command}`, () => void startHandsUp(), false);
+RegisterCommand(`-${GameplayConfig.actions.handsUp.command}`, () => stopHandsUpFromInput(), false);
+RegisterCommand(`+${GameplayConfig.actions.pointing.command}`, () => void startPointing(), false);
+RegisterCommand(`-${GameplayConfig.actions.pointing.command}`, () => stopPointingFromInput(), false);
+RegisterCommand('+rumble_point', () => void startPointing(), false);
+RegisterCommand('-rumble_point', () => stopPointingFromInput(), false);
 RegisterCommand(GameplayConfig.crouch.leftCommand, () => toggleCrouch(), false);
 RegisterCommand(GameplayConfig.crouch.rightCommand, () => toggleCrouch(), false);
+RegisterCommand('+rumble_sprint_guard', () => {
+    sprintGuardHeld = true;
+    const ped = PlayerPedId();
+    if (sprintGuardNeedsFrameSuppression(ped)) {
+        sprintCombatActive = true;
+        recordGameplayCallback();
+        ensureActionTick();
+        ensureActionMonitor();
+    }
+    else {
+        scheduleSprintProbe(55);
+    }
+}, false);
+RegisterCommand('-rumble_sprint_guard', () => {
+    sprintGuardHeld = false;
+    sprintCombatActive = false;
+    if (sprintProbeTimer)
+        clearTimeout(sprintProbeTimer);
+    sprintProbeTimer = null;
+    stopActionTickIfIdle();
+    if (!shouldRunActionMonitor() && actionMonitorTimer) {
+        clearTimeout(actionMonitorTimer);
+        actionMonitorTimer = null;
+    }
+    flushGameplayPerf();
+}, false);
 RegisterKeyMapping(`+${GameplayConfig.actions.handsUp.command}`, GameplayConfig.actions.handsUp.description, 'keyboard', GameplayConfig.actions.handsUp.key);
 RegisterKeyMapping(`+${GameplayConfig.actions.pointing.command}`, GameplayConfig.actions.pointing.description, 'keyboard', GameplayConfig.actions.pointing.key);
 RegisterKeyMapping(GameplayConfig.crouch.leftCommand, GameplayConfig.crouch.description, 'keyboard', GameplayConfig.crouch.leftKey);
 RegisterKeyMapping(GameplayConfig.crouch.rightCommand, GameplayConfig.crouch.alternateDescription, 'keyboard', GameplayConfig.crouch.rightKey);
-setTick(updateGameplayControls);
-let cameraZoomHandle = null;
-let cameraZoomTick = null;
-let cameraZoomLevel = 0;
-let cameraZoomBaseFov = 0.0;
-let cameraZoomCurrentFov = 0.0;
-let cameraZoomTargetFov = 0.0;
+RegisterKeyMapping('+rumble_sprint_guard', 'Rumble anti sprint-melee guard', 'keyboard', 'LSHIFT');
 const cameraZoomUnarmedHash = GetHashKey('WEAPON_UNARMED');
+const CAMERA_VIEW_CLOSE = 0;
+const CAMERA_VIEW_FAR = 2;
 const canUseCameraZoom = () => {
     const ped = PlayerPedId();
-    if (!ped || IsEntityDead(ped) || IsPedRagdoll(ped) || IsPedInAnyVehicle(ped, true) || IsPauseMenuActive())
-        return false;
-    return GetSelectedPedWeapon(ped) === cameraZoomUnarmedHash;
+    return Boolean(ped &&
+        DoesEntityExist(ped) &&
+        !IsEntityDead(ped) &&
+        !IsPedRagdoll(ped) &&
+        !IsPedInAnyVehicle(ped, true) &&
+        !IsPauseMenuActive() &&
+        GetSelectedPedWeapon(ped) === cameraZoomUnarmedHash);
 };
-const destroyCameraZoom = () => {
-    if (cameraZoomTick !== null) {
-        clearTick(cameraZoomTick);
-        cameraZoomTick = null;
-    }
-    if (cameraZoomHandle !== null && DoesCamExist(cameraZoomHandle)) {
-        RenderScriptCams(false, false, 0, true, true);
-        DestroyCam(cameraZoomHandle, false);
-    }
-    cameraZoomHandle = null;
-    cameraZoomLevel = 0;
-    cameraZoomBaseFov = 0.0;
-    cameraZoomCurrentFov = 0.0;
-    cameraZoomTargetFov = 0.0;
+const changeCameraZoom = (direction) => {
+    if (!GameplayConfig.cameraZoom.enabled || !canUseCameraZoom())
+        return;
+    const current = GetFollowPedCamViewMode();
+    if (current < CAMERA_VIEW_CLOSE || current > CAMERA_VIEW_FAR)
+        return;
+    const next = Math.max(CAMERA_VIEW_CLOSE, Math.min(CAMERA_VIEW_FAR, current + direction));
+    if (next !== current)
+        SetFollowPedCamViewMode(next);
 };
-const updateCameraZoom = () => {
-    if (cameraZoomHandle === null || !DoesCamExist(cameraZoomHandle) || !canUseCameraZoom()) {
-        destroyCameraZoom();
-        return;
-    }
-    const [x, y, z] = GetGameplayCamCoord();
-    const [rotX, rotY, rotZ] = GetGameplayCamRot(2);
-    SetCamCoord(cameraZoomHandle, x, y, z);
-    SetCamRot(cameraZoomHandle, rotX, rotY, rotZ, 2);
-    const frameTime = Math.min(GetFrameTime(), 0.05);
-    const blend = 1.0 - Math.exp(-GameplayConfig.cameraZoom.interpolationSpeed * frameTime);
-    cameraZoomCurrentFov += (cameraZoomTargetFov - cameraZoomCurrentFov) * blend;
-    SetCamFov(cameraZoomHandle, cameraZoomCurrentFov);
-    DisableControlAction(0, 14, true);
-    DisableControlAction(0, 15, true);
-    DisableControlAction(0, 16, true);
-    DisableControlAction(0, 17, true);
-    if (cameraZoomLevel === 0 && Math.abs(cameraZoomCurrentFov - cameraZoomBaseFov) <= 0.15) {
-        destroyCameraZoom();
-    }
-};
-const createCameraZoom = () => {
-    if (cameraZoomHandle !== null && DoesCamExist(cameraZoomHandle))
-        return true;
-    if (!canUseCameraZoom())
-        return false;
-    const [x, y, z] = GetGameplayCamCoord();
-    const [rotX, rotY, rotZ] = GetGameplayCamRot(2);
-    const renderedFov = GetFinalRenderedCamFov();
-    cameraZoomBaseFov = renderedFov >= 10.0 && renderedFov <= 130.0 ? renderedFov : 50.0;
-    cameraZoomCurrentFov = cameraZoomBaseFov;
-    cameraZoomTargetFov = cameraZoomBaseFov;
-    cameraZoomHandle = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA', x, y, z, rotX, rotY, rotZ, cameraZoomBaseFov, true, 2);
-    if (!cameraZoomHandle || !DoesCamExist(cameraZoomHandle)) {
-        destroyCameraZoom();
-        return false;
-    }
-    RenderScriptCams(true, false, 0, true, true);
-    cameraZoomTick = setTick(updateCameraZoom);
-    return true;
-};
-const setCameraZoomLevel = (level) => {
-    if (!GameplayConfig.cameraZoom.enabled)
-        return;
-    const nextLevel = Math.max(0, Math.min(GameplayConfig.cameraZoom.maxLevel, level));
-    if (nextLevel > 0 && !createCameraZoom())
-        return;
-    if (cameraZoomHandle === null)
-        return;
-    cameraZoomLevel = nextLevel;
-    cameraZoomTargetFov = cameraZoomLevel === 0
-        ? cameraZoomBaseFov
-        : Math.max(GameplayConfig.cameraZoom.minimumFov, cameraZoomBaseFov - GameplayConfig.cameraZoom.fovStep * cameraZoomLevel);
-};
-const reserveZoomWheel = () => {
-    DisableControlAction(0, 14, true);
-    DisableControlAction(0, 15, true);
-    DisableControlAction(0, 16, true);
-    DisableControlAction(0, 17, true);
-    const ped = PlayerPedId();
-    if (!ped)
-        return;
-    SetCurrentPedWeapon(ped, cameraZoomUnarmedHash, true);
-    setTimeout(() => {
-        const currentPed = PlayerPedId();
-        if (currentPed && canUseCameraZoom())
-            SetCurrentPedWeapon(currentPed, cameraZoomUnarmedHash, true);
-    }, 0);
-};
-RegisterCommand(GameplayConfig.cameraZoom.zoomInCommand, () => {
-    if (!canUseCameraZoom())
-        return;
-    reserveZoomWheel();
-    setCameraZoomLevel(cameraZoomLevel + 1);
-}, false);
-RegisterCommand(GameplayConfig.cameraZoom.zoomOutCommand, () => {
-    if (cameraZoomLevel === 0)
-        return;
-    reserveZoomWheel();
-    setCameraZoomLevel(cameraZoomLevel - 1);
-}, false);
+RegisterCommand(GameplayConfig.cameraZoom.zoomInCommand, () => changeCameraZoom(-1), false);
+RegisterCommand(GameplayConfig.cameraZoom.zoomOutCommand, () => changeCameraZoom(1), false);
 RegisterKeyMapping(GameplayConfig.cameraZoom.zoomInCommand, GameplayConfig.cameraZoom.zoomInDescription, 'MOUSE_WHEEL', 'IOM_WHEEL_UP');
 RegisterKeyMapping(GameplayConfig.cameraZoom.zoomOutCommand, GameplayConfig.cameraZoom.zoomOutDescription, 'MOUSE_WHEEL', 'IOM_WHEEL_DOWN');
 on('onClientResourceStart', (resourceName) => {
@@ -532,20 +736,16 @@ on('onClientResourceStart', (resourceName) => {
         return;
     applyWorldPolicy();
     stopAllGameplayActions();
-    destroyCameraZoom();
 });
 on('playerSpawned', () => {
     applyWorldPolicy();
     stopAllGameplayActions();
-    destroyCameraZoom();
 });
 on('rumble:client:playerLoaded', () => {
     applyWorldPolicy();
-    destroyCameraZoom();
 });
 on('onResourceStop', (resourceName) => {
     if (resourceName !== GetCurrentResourceName())
         return;
     stopAllGameplayActions();
-    destroyCameraZoom();
 });

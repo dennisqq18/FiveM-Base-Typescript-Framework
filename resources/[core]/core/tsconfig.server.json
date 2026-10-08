@@ -15,6 +15,7 @@
     "src/types/fivem-server.d.ts",
     "src/shared/types.ts",
     "src/shared/utils.ts",
+    "src/shared/appearance.ts",
     "src/config/core.config.ts",
     "src/config/gameplay.config.ts",
     "src/server/utils/server.utils.ts",

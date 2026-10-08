@@ -30,6 +30,7 @@ const activeJobs = new Map<number, PublicWorksSession>();
 const startCooldowns = new Map<number, number>();
 const eventCooldowns = new Map<string, number>();
 let jobSequence = 0;
+let maintenanceTimer: ReturnType<typeof setTimeout> | null = null;
 
 function coreApi(): any {
   const api = (globalThis as any).exports?.core;
@@ -155,11 +156,46 @@ async function saveProgress(source: number, type: PublicWorksJobType, taskCount:
   return { xp: gainedXp, level: jobLevel(progress, type) };
 }
 
+function scheduleMaintenance(delayMs = 2500): void {
+  if (activeJobs.size === 0) {
+    if (maintenanceTimer) clearTimeout(maintenanceTimer);
+    maintenanceTimer = null;
+    return;
+  }
+  if (maintenanceTimer) return;
+  maintenanceTimer = setTimeout(runMaintenance, Math.max(1000, delayMs));
+}
+
+function runMaintenance(): void {
+  maintenanceTimer = null;
+  if (activeJobs.size === 0) return;
+  const now = Date.now();
+  let hasGarbage = false;
+  for (const [playerSource, session] of Array.from(activeJobs.entries())) {
+    if (now - session.startedAt > PublicWorksConfig.maximumShiftMs) {
+      cleanupSession(playerSource, 'The shift expired because it exceeded the maximum working time.');
+      continue;
+    }
+    if (session.type !== 'garbage') continue;
+    hasGarbage = true;
+    // A newly-started shift is allowed a short window to network its truck.
+    if (session.vehicleNetId <= 0 && now - session.startedAt < 15_000) continue;
+    if (session.vehicleNetId <= 0 || !getGarbageVehicle(session)) {
+      cleanupSession(playerSource, 'The garbage truck disappeared or was deleted. The shift was cancelled and you receive no payment.');
+    }
+  }
+  if (activeJobs.size > 0) scheduleMaintenance(hasGarbage ? 2500 : 30_000);
+}
+
 function cleanupSession(source: number, reason?: string): void {
   const session = activeJobs.get(source);
   if (!session) return;
   activeJobs.delete(source);
   startCooldowns.set(source, Date.now());
+  if (activeJobs.size === 0 && maintenanceTimer) {
+    clearTimeout(maintenanceTimer);
+    maintenanceTimer = null;
+  }
   emitNet('publicworks:cancelled', source, reason ?? 'The shift was stopped.');
 }
 
@@ -202,6 +238,7 @@ async function startJob(source: number, type: PublicWorksJobType): Promise<void>
     level,
   };
   activeJobs.set(source, session);
+  scheduleMaintenance(type === 'garbage' ? 2500 : 30_000);
 
   emitNet('publicworks:jobStarted', source, {
     jobId,
@@ -363,6 +400,7 @@ onNet('publicworks:finish', (jobIdInput: string) => {
     // Money is already committed at this point, so the active shift must be closed
     // even if optional progression metadata has a temporary database failure.
     activeJobs.delete(source);
+    if (activeJobs.size === 0 && maintenanceTimer) { clearTimeout(maintenanceTimer); maintenanceTimer = null; }
     startCooldowns.set(source, Date.now());
 
     let gainedXp = 0;
@@ -406,27 +444,12 @@ RegisterCommand('jobstats', (source) => {
   message(source, `Cleaning: level ${sweeperLevel}, ${progress.sweeper.shifts} shifts, ${progress.sweeper.tasks} points, $${progress.sweeper.earnings.toLocaleString()} earned.`, 'info');
 }, false);
 
-// Low-frequency server-authoritative watchdog: catches /dv or any other deletion
-// even when the player is not interacting with a route point. Cost is O(active garbage shifts).
-setInterval(() => {
-  for (const [source, session] of activeJobs) {
-    if (session.type !== 'garbage' || session.vehicleNetId <= 0) continue;
-    if (!getGarbageVehicle(session)) cleanupSession(source, 'The garbage truck disappeared or was deleted. The shift was cancelled and no payment will be issued.');
-  }
-}, 2000);
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [source, session] of activeJobs) {
-    if (now - session.startedAt > PublicWorksConfig.maximumShiftMs) {
-      cleanupSession(source, 'The shift expired after exceeding the maximum work time.');
-    }
-  }
-}, 60000);
+// Maintenance is demand-driven: no timer runs when no Public Works shift exists.
 
 on('playerDropped', () => {
   const source = Number((globalThis as any).source);
   activeJobs.delete(source);
+  if (activeJobs.size === 0 && maintenanceTimer) { clearTimeout(maintenanceTimer); maintenanceTimer = null; }
   startCooldowns.delete(source);
   for (const key of Array.from(eventCooldowns.keys())) if (key.startsWith(`${source}:`)) eventCooldowns.delete(key);
 });
@@ -440,7 +463,7 @@ on('onResourceStart', (resourceName: string) => {
   if (resourceName !== PUBLICWORKS_RESOURCE) return;
   if (GetResourceState('runtime') === 'started') {
     try {
-      (globalThis as any).exports.runtime.RegisterModule('publicworks', '1.0.1', PUBLICWORKS_RESOURCE);
+      (globalThis as any).exports.runtime.RegisterModule('publicworks', '1.1.0', PUBLICWORKS_RESOURCE);
       (globalThis as any).exports.runtime.ReportHealth('publicworks', 'healthy', { activeJobs: activeJobs.size });
     } catch {}
   }
@@ -449,6 +472,8 @@ on('onResourceStart', (resourceName: string) => {
 
 on('onResourceStop', (resourceName: string) => {
   if (resourceName !== PUBLICWORKS_RESOURCE) return;
+  if (maintenanceTimer) clearTimeout(maintenanceTimer);
+  maintenanceTimer = null;
   activeJobs.clear();
   eventCooldowns.clear();
 });

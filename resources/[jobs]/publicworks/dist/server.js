@@ -97,6 +97,7 @@ const activeJobs = new Map();
 const startCooldowns = new Map();
 const eventCooldowns = new Map();
 let jobSequence = 0;
+let maintenanceTimer = null;
 function coreApi() {
     const api = globalThis.exports?.core;
     if (!api)
@@ -215,12 +216,50 @@ async function saveProgress(source, type, taskCount, pay) {
     await Promise.resolve(coreApi().SetMetadata(source, 'jobs.publicworks', progress));
     return { xp: gainedXp, level: jobLevel(progress, type) };
 }
+function scheduleMaintenance(delayMs = 2500) {
+    if (activeJobs.size === 0) {
+        if (maintenanceTimer)
+            clearTimeout(maintenanceTimer);
+        maintenanceTimer = null;
+        return;
+    }
+    if (maintenanceTimer)
+        return;
+    maintenanceTimer = setTimeout(runMaintenance, Math.max(1000, delayMs));
+}
+function runMaintenance() {
+    maintenanceTimer = null;
+    if (activeJobs.size === 0)
+        return;
+    const now = Date.now();
+    let hasGarbage = false;
+    for (const [playerSource, session] of Array.from(activeJobs.entries())) {
+        if (now - session.startedAt > PublicWorksConfig.maximumShiftMs) {
+            cleanupSession(playerSource, 'The shift expired because it exceeded the maximum working time.');
+            continue;
+        }
+        if (session.type !== 'garbage')
+            continue;
+        hasGarbage = true;
+        if (session.vehicleNetId <= 0 && now - session.startedAt < 15_000)
+            continue;
+        if (session.vehicleNetId <= 0 || !getGarbageVehicle(session)) {
+            cleanupSession(playerSource, 'The garbage truck disappeared or was deleted. The shift was cancelled and you receive no payment.');
+        }
+    }
+    if (activeJobs.size > 0)
+        scheduleMaintenance(hasGarbage ? 2500 : 30_000);
+}
 function cleanupSession(source, reason) {
     const session = activeJobs.get(source);
     if (!session)
         return;
     activeJobs.delete(source);
     startCooldowns.set(source, Date.now());
+    if (activeJobs.size === 0 && maintenanceTimer) {
+        clearTimeout(maintenanceTimer);
+        maintenanceTimer = null;
+    }
     emitNet('publicworks:cancelled', source, reason ?? 'The shift was stopped.');
 }
 async function startJob(source, type) {
@@ -266,6 +305,7 @@ async function startJob(source, type) {
         level,
     };
     activeJobs.set(source, session);
+    scheduleMaintenance(type === 'garbage' ? 2500 : 30_000);
     emitNet('publicworks:jobStarted', source, {
         jobId,
         type,
@@ -432,6 +472,10 @@ onNet('publicworks:finish', (jobIdInput) => {
             return message(source, 'The payment could not be processed. Try again at the dispatcher.', 'error');
         }
         activeJobs.delete(source);
+        if (activeJobs.size === 0 && maintenanceTimer) {
+            clearTimeout(maintenanceTimer);
+            maintenanceTimer = null;
+        }
         startCooldowns.set(source, Date.now());
         let gainedXp = 0;
         let level = session.level;
@@ -476,25 +520,13 @@ RegisterCommand('jobstats', (source) => {
     message(source, `Garbage: level ${garbageLevel}, ${progress.garbage.shifts} shifts, ${progress.garbage.tasks} stops, $${progress.garbage.earnings.toLocaleString()} earned.`, 'info');
     message(source, `Cleaning: level ${sweeperLevel}, ${progress.sweeper.shifts} shifts, ${progress.sweeper.tasks} points, $${progress.sweeper.earnings.toLocaleString()} earned.`, 'info');
 }, false);
-setInterval(() => {
-    for (const [source, session] of activeJobs) {
-        if (session.type !== 'garbage' || session.vehicleNetId <= 0)
-            continue;
-        if (!getGarbageVehicle(session))
-            cleanupSession(source, 'The garbage truck disappeared or was deleted. The shift was cancelled and no payment will be issued.');
-    }
-}, 2000);
-setInterval(() => {
-    const now = Date.now();
-    for (const [source, session] of activeJobs) {
-        if (now - session.startedAt > PublicWorksConfig.maximumShiftMs) {
-            cleanupSession(source, 'The shift expired after exceeding the maximum work time.');
-        }
-    }
-}, 60000);
 on('playerDropped', () => {
     const source = Number(globalThis.source);
     activeJobs.delete(source);
+    if (activeJobs.size === 0 && maintenanceTimer) {
+        clearTimeout(maintenanceTimer);
+        maintenanceTimer = null;
+    }
     startCooldowns.delete(source);
     for (const key of Array.from(eventCooldowns.keys()))
         if (key.startsWith(`${source}:`))
@@ -510,7 +542,7 @@ on('onResourceStart', (resourceName) => {
         return;
     if (GetResourceState('runtime') === 'started') {
         try {
-            globalThis.exports.runtime.RegisterModule('publicworks', '1.0.1', PUBLICWORKS_RESOURCE);
+            globalThis.exports.runtime.RegisterModule('publicworks', '1.1.0', PUBLICWORKS_RESOURCE);
             globalThis.exports.runtime.ReportHealth('publicworks', 'healthy', { activeJobs: activeJobs.size });
         }
         catch { }
@@ -520,6 +552,9 @@ on('onResourceStart', (resourceName) => {
 on('onResourceStop', (resourceName) => {
     if (resourceName !== PUBLICWORKS_RESOURCE)
         return;
+    if (maintenanceTimer)
+        clearTimeout(maintenanceTimer);
+    maintenanceTimer = null;
     activeJobs.clear();
     eventCooldowns.clear();
 });

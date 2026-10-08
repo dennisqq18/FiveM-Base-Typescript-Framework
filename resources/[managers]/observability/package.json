@@ -1,10 +1,12 @@
 {
   "name": "observability",
-  "version": "0.11.3",
+  "version": "0.13.1",
   "private": true,
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "build": "tsc -p tsconfig.json && node --check dist/server.js"
+    "typecheck": "npm run typecheck:server && npm run typecheck:client",
+    "typecheck:server": "tsc -p tsconfig.server.json --noEmit",
+    "typecheck:client": "tsc -p tsconfig.client.json --noEmit",
+    "build": "npm run typecheck && tsc -p tsconfig.server.json && tsc -p tsconfig.client.json && node --check dist/server.js && node --check dist/client.js && node --check nui/app.js"
   },
   "devDependencies": {
     "typescript": "5.8.3"

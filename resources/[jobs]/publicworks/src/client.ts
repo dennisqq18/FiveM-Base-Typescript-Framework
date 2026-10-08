@@ -26,6 +26,8 @@ let activeJob: ClientPublicWorksJob | null = null;
 let depotBlip = 0;
 let interactionTimer: ReturnType<typeof setTimeout> | null = null;
 
+const publicWorksPerf = { windowStartedAt: Date.now(), calls: 0, busyMs: 0, maxMs: 0 };
+
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 function chat(text: string, kind: 'info' | 'success' | 'error' = 'info'): void {
@@ -385,10 +387,12 @@ onNet('publicworks:cancelled', (reason: string) => {
 function handleInteraction(): number {
   const ped = PlayerPedId();
   if (!ped || !DoesEntityExist(ped)) return 1000;
+  const [playerX, playerY, playerZ] = GetEntityCoords(ped, false);
+  const distanceFromPlayer = (position: PublicWorksPosition) => Math.hypot(playerX - position.x, playerY - position.y, playerZ - position.z);
   const job = activeJob;
 
   if (!job) {
-    const depotDistance = distanceTo(PublicWorksConfig.depot.position);
+    const depotDistance = distanceFromPlayer(PublicWorksConfig.depot.position);
     if (depotDistance > 70.0) return 1000;
     if (depotDistance < 35.0) drawWorkMarker(PublicWorksConfig.depot.position, 0.9);
     if (depotDistance <= PublicWorksConfig.interactionRadius) {
@@ -396,7 +400,7 @@ function handleInteraction(): number {
       if (IsControlJustPressed(0, CONTROL_INTERACT)) emitNet('publicworks:requestStart', 'garbage');
       else if (IsControlJustPressed(0, CONTROL_SECONDARY)) emitNet('publicworks:requestStart', 'sweeper');
     }
-    return depotDistance < 45.0 ? 0 : 350;
+    return depotDistance < 35.0 ? 0 : 350;
   }
 
   if (job.type === 'garbage' && job.truckNetId > 0 && !resolveGarbageTruck(job)) {
@@ -409,7 +413,7 @@ function handleInteraction(): number {
   }
 
   if (job.phase === 'return') {
-    const depotDistance = distanceTo(PublicWorksConfig.depot.position);
+    const depotDistance = distanceFromPlayer(PublicWorksConfig.depot.position);
     if (depotDistance < 35.0) drawWorkMarker(PublicWorksConfig.depot.position, 1.0);
     if (depotDistance <= PublicWorksConfig.interactionRadius + 1.0) {
       drawPrompt(job.type === 'garbage' ? '~g~[E]~s~ Return the garbage truck and collect payment' : '~g~[E]~s~ Finish the shift and collect payment');
@@ -419,13 +423,13 @@ function handleInteraction(): number {
         emitNet('publicworks:finish', job.jobId);
       }
     }
-    return depotDistance < 45.0 ? 0 : 300;
+    return depotDistance < 35.0 ? 0 : 300;
   }
 
   if (job.type === 'garbage' && job.phase === 'carry') {
     const [x, y, z] = GetOffsetFromEntityInWorldCoords(job.truck, 0.0, -4.15, 0.0);
     const rear = { x, y, z };
-    const rearDistance = distanceTo(rear);
+    const rearDistance = distanceFromPlayer(rear);
     if (rearDistance < 25.0) drawWorkMarker(rear, 0.65);
     if (rearDistance <= PublicWorksConfig.interactionRadius + 0.7) {
       drawPrompt('~g~[E]~s~ Throw the bag into the garbage truck');
@@ -435,12 +439,12 @@ function handleInteraction(): number {
         emitNet('publicworks:garbage:deposit', job.jobId, job.step, NetworkGetNetworkIdFromEntity(job.truck));
       }
     }
-    return rearDistance < 30.0 ? 0 : 250;
+    return rearDistance < 25.0 ? 0 : 250;
   }
 
   const point = job.points[job.step];
   if (!point) return 500;
-  const pointDistance = distanceTo(point.position);
+  const pointDistance = distanceFromPlayer(point.position);
   if (pointDistance < 35.0) drawWorkMarker(point.position, 0.7);
   if (pointDistance <= PublicWorksConfig.interactionRadius + 0.4) {
     if (job.type === 'garbage') {
@@ -455,22 +459,35 @@ function handleInteraction(): number {
       if (IsControlJustPressed(0, CONTROL_INTERACT) && !job.busy) void runSweepAnimation(job);
     }
   }
-  return pointDistance < 45.0 ? 0 : 300;
+  return pointDistance < 35.0 ? 0 : 300;
 }
 
 function scheduleInteractionLoop(delayMs = 0): void {
   if (interactionTimer) clearTimeout(interactionTimer);
+  // Never use a 0 ms recursive timer here. It can execute multiple times inside the same
+  // rendered frame and was the main reason this small job showed an outsized resmon cost.
   interactionTimer = setTimeout(() => {
     interactionTimer = null;
     let next = 1000;
+    // Sample the client workload only once per 32 callbacks. This avoids both
+    // the unavailable performance.now() global and per-frame timing overhead.
+    publicWorksPerf.calls++;
+    const shouldSample = publicWorksPerf.calls % 32 === 0;
+    const started = shouldSample ? Date.now() : 0;
     try {
       next = handleInteraction();
     } catch (error) {
       console.error('[publicworks] interaction loop', error);
       next = 1000;
+    } finally {
+      if (shouldSample) {
+        const duration = Math.max(0, Date.now() - started);
+        publicWorksPerf.busyMs += duration * 32;
+        publicWorksPerf.maxMs = Math.max(publicWorksPerf.maxMs, duration);
+      }
     }
     scheduleInteractionLoop(next);
-  }, Math.max(0, delayMs));
+  }, Math.max(16, delayMs));
 }
 
 on('onClientResourceStart', (resourceName: string) => {
@@ -491,6 +508,23 @@ on('onClientResourceStop', (resourceName: string) => {
   depotBlip = 0;
   void cleanupClientJob(true);
 });
+
+setInterval(() => {
+  const now = Date.now();
+  const windowMs = Math.max(1, now - publicWorksPerf.windowStartedAt);
+  emitNet('rumble:observability:clientResourceSample', {
+    resource: GetCurrentResourceName(),
+    windowMs,
+    callbacks: publicWorksPerf.calls,
+    busyMs: Number(publicWorksPerf.busyMs.toFixed(3)),
+    maxCallbackMs: Number(publicWorksPerf.maxMs.toFixed(3)),
+    active: Boolean(activeJob),
+  });
+  publicWorksPerf.windowStartedAt = now;
+  publicWorksPerf.calls = 0;
+  publicWorksPerf.busyMs = 0;
+  publicWorksPerf.maxMs = 0;
+}, 30000);
 
 exports('GetActiveJob', () => activeJob ? {
   type: activeJob.type,

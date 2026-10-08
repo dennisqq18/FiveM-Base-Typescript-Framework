@@ -3,6 +3,6 @@ game 'gta5'
 
 author 'Rumble Studios'
 description 'Rumble gameplay manager'
-version '0.12.1'
+version '0.13.1'
 
 client_script 'dist/client.js'

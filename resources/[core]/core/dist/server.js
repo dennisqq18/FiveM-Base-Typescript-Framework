@@ -29,9 +29,130 @@ var RumbleShared;
     }
     RumbleShared.vector4 = vector4;
 })(RumbleShared || (RumbleShared = {}));
+const APPEARANCE_VERSION = 1;
+const APPEARANCE_TATTOOS = Object.freeze([
+    Object.freeze({ id: 'beach_head_1', label: 'Beach Head', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Head_000', female: '' }),
+    Object.freeze({ id: 'beach_neck_1', label: 'Beach Neck', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Neck_000', female: 'MP_Bea_F_Neck_000' }),
+    Object.freeze({ id: 'beach_back_1', label: 'Beach Back', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Back_000', female: 'MP_Bea_F_Back_000' }),
+    Object.freeze({ id: 'beach_chest_1', label: 'Beach Chest', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Chest_000', female: 'MP_Bea_F_Chest_000' }),
+    Object.freeze({ id: 'beach_chest_2', label: 'Beach Chest II', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Chest_001', female: 'MP_Bea_F_Chest_001' }),
+    Object.freeze({ id: 'beach_stomach_1', label: 'Beach Stomach', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Stom_000', female: 'MP_Bea_F_Stom_000' }),
+    Object.freeze({ id: 'beach_stomach_2', label: 'Beach Stomach II', collection: 'mpbeach_overlays', male: 'MP_Bea_M_Stom_001', female: 'MP_Bea_F_Stom_001' }),
+    Object.freeze({ id: 'biker_demon', label: 'Demon Rider', collection: 'mpbiker_overlays', male: 'MP_MP_Biker_Tat_000_M', female: 'MP_MP_Biker_Tat_000_F' }),
+    Object.freeze({ id: 'airraces_bombs', label: 'Bombs Away', collection: 'mpairraces_overlays', male: 'MP_Airraces_Tattoo_006_M', female: 'MP_Airraces_Tattoo_006_F' }),
+    Object.freeze({ id: 'airraces_eagle', label: 'Eagle Eyes', collection: 'mpairraces_overlays', male: 'MP_Airraces_Tattoo_007_M', female: 'MP_Airraces_Tattoo_007_F' }),
+    Object.freeze({ id: 'xmas2017_thor', label: 'Thor & Goblin', collection: 'mpchristmas2017_overlays', male: 'MP_Christmas2017_Tattoo_000_M', female: 'MP_Christmas2017_Tattoo_000_F' }),
+    Object.freeze({ id: 'xmas2017_kabuto', label: 'Kabuto', collection: 'mpchristmas2017_overlays', male: 'MP_Christmas2017_Tattoo_002_M', female: 'MP_Christmas2017_Tattoo_002_F' }),
+]);
+const clampAppearanceInt = (value, minimum, maximum, fallback = minimum) => {
+    const numeric = Math.floor(Number(value));
+    return Number.isFinite(numeric) ? Math.max(minimum, Math.min(maximum, numeric)) : fallback;
+};
+const clampAppearanceFloat = (value, minimum, maximum, fallback = 0) => {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? Math.max(minimum, Math.min(maximum, numeric)) : fallback;
+};
+const sanitizeDrawable = (value, allowNone = false) => ({
+    drawable: clampAppearanceInt(value?.drawable, allowNone ? -1 : 0, 255, allowNone ? -1 : 0),
+    texture: clampAppearanceInt(value?.texture, 0, 63, 0),
+});
+function createDefaultAppearance(sex = 'male') {
+    return {
+        version: APPEARANCE_VERSION,
+        sex,
+        parents: { shapeFirst: 0, shapeSecond: 21, skinFirst: 0, skinSecond: 21, shapeMix: 0.5, skinMix: 0.5 },
+        faceFeatures: Array.from({ length: 20 }, () => 0),
+        eyeColor: 0,
+        hair: { style: 0, texture: 0, color: 0, highlight: 0 },
+        beard: { style: -1, opacity: 1, color: 0 },
+        eyebrows: { style: 0, opacity: 1, color: 0 },
+        clothes: {
+            mask: { drawable: 0, texture: 0 },
+            arms: { drawable: 0, texture: 0 },
+            pants: { drawable: 0, texture: 0 },
+            bag: { drawable: 0, texture: 0 },
+            shoes: { drawable: 0, texture: 0 },
+            accessory: { drawable: 0, texture: 0 },
+            undershirt: { drawable: 0, texture: 0 },
+            armor: { drawable: 0, texture: 0 },
+            decals: { drawable: 0, texture: 0 },
+            torso: { drawable: 0, texture: 0 },
+        },
+        props: {
+            hat: { drawable: -1, texture: 0 },
+            glasses: { drawable: -1, texture: 0 },
+            ears: { drawable: -1, texture: 0 },
+            watch: { drawable: -1, texture: 0 },
+            bracelet: { drawable: -1, texture: 0 },
+        },
+        tattoos: [],
+    };
+}
+function sanitizeAppearance(input) {
+    const sex = input?.sex === 'female' ? 'female' : 'male';
+    const fallback = createDefaultAppearance(sex);
+    const features = Array.isArray(input?.faceFeatures) ? input.faceFeatures : [];
+    const allowedTattooIds = new Set(APPEARANCE_TATTOOS.map((tattoo) => tattoo.id));
+    const tattoos = Array.isArray(input?.tattoos)
+        ? Array.from(new Set(input.tattoos.map((entry) => String(entry)).filter((entry) => allowedTattooIds.has(entry)))).slice(0, 12)
+        : [];
+    return {
+        version: APPEARANCE_VERSION,
+        sex,
+        parents: {
+            shapeFirst: clampAppearanceInt(input?.parents?.shapeFirst, 0, 45, fallback.parents.shapeFirst),
+            shapeSecond: clampAppearanceInt(input?.parents?.shapeSecond, 0, 45, fallback.parents.shapeSecond),
+            skinFirst: clampAppearanceInt(input?.parents?.skinFirst, 0, 45, fallback.parents.skinFirst),
+            skinSecond: clampAppearanceInt(input?.parents?.skinSecond, 0, 45, fallback.parents.skinSecond),
+            shapeMix: clampAppearanceFloat(input?.parents?.shapeMix, 0, 1, fallback.parents.shapeMix),
+            skinMix: clampAppearanceFloat(input?.parents?.skinMix, 0, 1, fallback.parents.skinMix),
+        },
+        faceFeatures: Array.from({ length: 20 }, (_, index) => clampAppearanceFloat(features[index], -1, 1, 0)),
+        eyeColor: clampAppearanceInt(input?.eyeColor, 0, 31, 0),
+        hair: {
+            style: clampAppearanceInt(input?.hair?.style, 0, 255, 0),
+            texture: clampAppearanceInt(input?.hair?.texture, 0, 63, 0),
+            color: clampAppearanceInt(input?.hair?.color, 0, 63, 0),
+            highlight: clampAppearanceInt(input?.hair?.highlight, 0, 63, 0),
+        },
+        beard: {
+            style: clampAppearanceInt(input?.beard?.style, -1, 63, -1),
+            opacity: clampAppearanceFloat(input?.beard?.opacity, 0, 1, 1),
+            color: clampAppearanceInt(input?.beard?.color, 0, 63, 0),
+        },
+        eyebrows: {
+            style: clampAppearanceInt(input?.eyebrows?.style, -1, 63, 0),
+            opacity: clampAppearanceFloat(input?.eyebrows?.opacity, 0, 1, 1),
+            color: clampAppearanceInt(input?.eyebrows?.color, 0, 63, 0),
+        },
+        clothes: {
+            mask: sanitizeDrawable(input?.clothes?.mask),
+            arms: sanitizeDrawable(input?.clothes?.arms),
+            pants: sanitizeDrawable(input?.clothes?.pants),
+            bag: sanitizeDrawable(input?.clothes?.bag),
+            shoes: sanitizeDrawable(input?.clothes?.shoes),
+            accessory: sanitizeDrawable(input?.clothes?.accessory),
+            undershirt: sanitizeDrawable(input?.clothes?.undershirt),
+            armor: sanitizeDrawable(input?.clothes?.armor),
+            decals: sanitizeDrawable(input?.clothes?.decals),
+            torso: sanitizeDrawable(input?.clothes?.torso),
+        },
+        props: {
+            hat: sanitizeDrawable(input?.props?.hat, true),
+            glasses: sanitizeDrawable(input?.props?.glasses, true),
+            ears: sanitizeDrawable(input?.props?.ears, true),
+            watch: sanitizeDrawable(input?.props?.watch, true),
+            bracelet: sanitizeDrawable(input?.props?.bracelet, true),
+        },
+        tattoos,
+    };
+}
+function hasSavedAppearance(value) {
+    return Boolean(value && Number(value.version) === APPEARANCE_VERSION && (value.sex === 'male' || value.sex === 'female'));
+}
 const Config = Object.freeze({
     frameworkName: 'Rumble',
-    version: '0.12.2',
+    version: '0.13.1',
     defaultCash: 500,
     defaultCard: 5000,
     maxCharacters: 5,
@@ -206,11 +327,14 @@ function oxmysql() {
 function databaseLabel(query) {
     return query.replace(/\s+/g, ' ').trim().slice(0, 120);
 }
+const databaseClockNow = () => typeof performance !== 'undefined' && typeof performance.now === 'function'
+    ? performance.now()
+    : Date.now();
 async function runDatabaseCall(query, operation) {
     const current = Date.now();
     if (databaseMetrics.circuitOpenUntil > current)
         throw new CoreError('DATABASE_CIRCUIT_OPEN', 'Database circuit breaker is open.', { retryAfterMs: databaseMetrics.circuitOpenUntil - current });
-    const started = performance.now();
+    const started = databaseClockNow();
     databaseMetrics.queries++;
     let failed = false;
     try {
@@ -227,7 +351,7 @@ async function runDatabaseCall(query, operation) {
         throw error;
     }
     finally {
-        const durationMs = Number((performance.now() - started).toFixed(2));
+        const durationMs = Number((databaseClockNow() - started).toFixed(2));
         databaseMetrics.totalMs += durationMs;
         databaseMetrics.maxMs = Math.max(databaseMetrics.maxMs, durationMs);
         const slow = durationMs >= Config.slowQueryThresholdMs;
@@ -1022,6 +1146,7 @@ const rpcHandlers = new Map();
 const rpcValidators = new Map();
 const commandRegistry = new Map();
 const activeCharacterOwners = new Map();
+const appearanceEditingSources = new Set();
 let databaseReady = false;
 let autosaveRunning = false;
 const playerRepository = new PlayerRepository();
@@ -1544,11 +1669,16 @@ async function selectCharacter(source, identifier, character) {
         playerRepository.setActiveCharacter(identifier, character.id),
     ]);
     syncStateBag(session);
+    const requiresAppearance = !hasSavedAppearance(session.metadata.appearance);
+    appearanceEditingSources.delete(source);
+    if (requiresAppearance)
+        appearanceEditingSources.add(source);
     emitNet('rumble:character:selected', source, {
         player: publicPlayer(session),
         metadata: publicMetadata(session),
         inventory: publicInventory(session),
         spawns: Object.values(SPAWNS),
+        requiresAppearance,
     });
     emit('rumble:server:characterLoaded', source, publicPlayer(session));
     Logger.info('PLAYER', 'Character selected', { source, playerId, stateId: character.stateId, citizenId: character.citizenId });
@@ -2169,6 +2299,42 @@ onNet('rumble:character:select', (characterId) => {
         emitNet('rumble:character:selectorError', source, 'Could not select the character.');
     });
 });
+onNet('rumble:character:appearanceSave', (rawAppearance) => {
+    const source = Number(globalThis.source);
+    const session = sessions.get(source);
+    if (!session || !allowRate(source, 'character:appearanceSave', 4, 5000))
+        return;
+    if (!appearanceEditingSources.has(source)) {
+        rejectSecurity(source, 'appearance_save_without_editor');
+        emitNet('rumble:character:appearanceError', source, 'The character creator is not active.');
+        return;
+    }
+    void (async () => {
+        const serializedInput = JSON.stringify(rawAppearance ?? {});
+        if (serializedInput.length > Config.maxMetadataBytes) {
+            emitNet('rumble:character:appearanceError', source, 'Appearance payload is too large.');
+            return;
+        }
+        const appearance = sanitizeAppearance(rawAppearance);
+        const serialized = JSON.stringify(appearance);
+        await metadataRepository.set(session.character.id, 'appearance', serialized);
+        session.metadata.appearance = appearance;
+        appearanceEditingSources.delete(source);
+        const selection = {
+            player: publicPlayer(session),
+            metadata: publicMetadata(session),
+            inventory: publicInventory(session),
+            spawns: Object.values(SPAWNS),
+            requiresAppearance: false,
+        };
+        emitNet('rumble:character:appearanceSaved', source, { appearance, selection });
+        emit('rumble:server:metadataChanged', source, 'appearance', appearance);
+        void logAction('character', 'appearance_saved', source, source, { characterId: session.character.id, sex: appearance.sex, tattoos: appearance.tattoos.length });
+    })().catch((error) => {
+        Logger.error('CHARACTER', 'Appearance save failed', { source, error: String(error) });
+        emitNet('rumble:character:appearanceError', source, 'Could not save the character appearance.');
+    });
+});
 onNet('rumble:player:spawned', (spawnId) => {
     const source = Number(globalThis.source);
     const session = sessions.get(source);
@@ -2353,6 +2519,7 @@ on('playerDropped', () => {
     sessions.delete(source);
     loadingPlayers.delete(source);
     creatingCharacters.delete(source);
+    appearanceEditingSources.delete(source);
     Security.clearSource(source);
     RpcIdempotency.clearSource(source);
     frozenPlayers.delete(source);
@@ -2728,6 +2895,24 @@ RegisterCommand('ara', (source) => {
         }
     }
     message(source, `Revive sent to ${revived} player(s) within 10m, including yourself.`, 'success');
+}, false);
+RegisterCommand('creator', (source) => {
+    if (source === 0 || !requireAdmin(source))
+        return;
+    const session = sessions.get(source);
+    if (!session)
+        return;
+    session.spawned = false;
+    appearanceEditingSources.add(source);
+    syncStateBag(session);
+    emitNet('rumble:character:selected', source, {
+        player: publicPlayer(session),
+        metadata: publicMetadata(session),
+        inventory: publicInventory(session),
+        spawns: Object.values(SPAWNS),
+        requiresAppearance: true,
+    });
+    message(source, 'Character creator opened. Save the appearance to continue.', 'info');
 }, false);
 RegisterCommand('fly', (source) => {
     if (source === 0 || !requireAdmin(source))
@@ -3107,6 +3292,30 @@ exports('GetCapabilities', () => ({
     features: { ...Config.features },
     managers: ['runtime', 'sessions', 'permissions', 'observability', 'gameplay'],
 }));
+exports('GetPlayerDiagnostics', () => Array.from(sessions.values()).map((session) => ({
+    source: session.source,
+    playerId: session.playerId,
+    name: session.playerName,
+    ping: Number(globalThis.GetPlayerPing?.(session.source) ?? 0),
+    spawned: session.spawned,
+    dirty: Array.from(session.dirty),
+    revision: session.revision,
+    savedRevision: session.savedRevision,
+    character: {
+        id: session.character.id,
+        stateId: session.character.stateId,
+        citizenId: session.character.citizenId,
+        name: `${session.character.firstName} ${session.character.lastName}`,
+        health: session.character.health,
+        armor: session.character.armor,
+        hunger: session.character.hunger,
+        thirst: session.character.thirst,
+        position: { ...session.character.position },
+    },
+    faction: session.faction ? { ...session.faction } : null,
+    appearanceSaved: hasSavedAppearance(session.metadata.appearance),
+    deathState: String(session.metadata.deathState ?? 'alive'),
+})));
 exports('GetDiagnostics', () => ({
     version: Config.version,
     apiVersion: Config.apiVersion,

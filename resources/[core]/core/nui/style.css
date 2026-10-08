@@ -676,3 +676,65 @@ kbd {
   color: #a99aff !important;
   font-weight: 750;
 }
+
+/* v0.13 character creator */
+.creator-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 28px 42px;
+  pointer-events: none;
+  background: linear-gradient(90deg, transparent 0%, transparent 43%, rgba(4, 5, 9, 0.14) 100%);
+}
+.creator-panel {
+  pointer-events: auto;
+  width: min(610px, 43vw);
+  max-height: calc(100vh - 56px);
+  padding: 25px;
+  display: flex;
+  flex-direction: column;
+}
+.creator-panel .brand-row { margin-bottom: 13px; }
+.creator-panel > p { margin-bottom: 14px; }
+.creator-camera-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 7px; margin: 2px 0 13px; }
+.mini-button, .creator-tab, .creator-choice, .tattoo-item {
+  border: 1px solid rgba(255,255,255,.08);
+  border-radius: 9px;
+  background: rgba(255,255,255,.04);
+  color: #dfe3ec;
+  cursor: pointer;
+}
+.mini-button { min-height: 34px; font-size: 10px; font-weight: 750; }
+.creator-tabs { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; padding: 5px; border-radius: 12px; background: rgba(0,0,0,.22); }
+.creator-tab { min-height: 36px; font-size: 10px; font-weight: 800; text-transform: uppercase; letter-spacing: .035em; }
+.creator-tab.active { border-color: rgba(128,96,255,.5); background: rgba(128,96,255,.18); color: #eeeaff; }
+.creator-scroll { min-height: 260px; max-height: 54vh; overflow-y: auto; padding: 15px 6px 6px 2px; }
+.creator-scroll::-webkit-scrollbar { width: 4px; }
+.creator-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,.14); border-radius: 8px; }
+.creator-section-title { margin: 2px 0 12px; color: #eef0f7; font-size: 12px; font-weight: 850; }
+.creator-sex-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 15px; }
+.creator-choice { min-height: 42px; font-size: 11px; font-weight: 800; }
+.creator-choice.selected { border-color: rgba(128,96,255,.55); background: linear-gradient(135deg, rgba(129,95,255,.22), rgba(92,125,255,.14)); }
+.creator-range { padding: 9px 11px; margin-bottom: 7px; border: 1px solid rgba(255,255,255,.055); border-radius: 10px; background: rgba(255,255,255,.025); }
+.creator-range-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 7px; font-size: 10px; color: #aeb6c5; }
+.creator-range-head strong { color: #e8e9f0; font-variant-numeric: tabular-nums; }
+.creator-range input[type="range"] { width: 100%; height: 4px; accent-color: #795fff; cursor: pointer; }
+.creator-feature-list { display: grid; grid-template-columns: 1fr 1fr; gap: 0 7px; }
+.creator-inline-help { margin: 0 0 12px !important; padding: 10px 12px; border: 1px solid rgba(123,101,255,.13); border-radius: 10px; background: rgba(123,101,255,.055); color: #959db0 !important; font-size: 10px !important; }
+.clothes-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.clothes-card { padding: 10px; border: 1px solid rgba(255,255,255,.06); border-radius: 12px; background: rgba(255,255,255,.02); }
+.clothes-card > strong { display: block; margin: 0 0 7px 2px; color: #e9ebf2; font-size: 11px; }
+.clothes-card .creator-range { padding: 7px 8px; margin-bottom: 5px; }
+.prop-card { border-color: rgba(113,142,255,.11); }
+.tattoo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tattoo-item { min-height: 48px; padding: 0 12px; display: flex; align-items: center; justify-content: space-between; text-align: left; font-size: 10px; font-weight: 700; }
+.tattoo-item small { color: #8d79ff; font-size: 15px; }
+.tattoo-item.selected { border-color: rgba(128,96,255,.52); background: rgba(128,96,255,.15); }
+.tattoo-item:disabled { opacity: .28; cursor: default; }
+.creator-save { flex: 0 0 auto; }
+@media (max-width: 1050px) {
+  .creator-panel { width: min(650px, 58vw); }
+  .creator-feature-list, .clothes-grid { grid-template-columns: 1fr; }
+}

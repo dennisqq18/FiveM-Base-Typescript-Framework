@@ -13,10 +13,6 @@
   },
   "files": [
     "src/types/fivem-client.d.ts",
-    "src/shared/types.ts",
-    "src/shared/utils.ts",
-    "src/shared/appearance.ts",
-    "src/config/client.config.ts",
     "src/client.ts"
   ]
 }

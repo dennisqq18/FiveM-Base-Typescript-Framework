@@ -57,6 +57,13 @@ let loaded = false;
 let registrationOpen = false;
 let selectorOpen = false;
 let spawnOpen = false;
+let appearanceOpen = false;
+let appearanceCamera = 0;
+let appearanceCameraView: 'face' | 'body' = 'face';
+let appearancePreviewToken = 0;
+let appearanceDraft: CharacterAppearance | null = null;
+let currentAppearance: CharacterAppearance | null = null;
+let pendingSelectionPayload: any = null;
 let deathState: 'alive' | 'downed' | 'dead' | 'respawning' = 'alive';
 let inventoryState: any[] = [];
 let registrationProfile: any = {};
@@ -80,7 +87,7 @@ function chat(text: string, kind: 'info' | 'success' | 'error' = 'info'): void {
 }
 
 function refreshNuiFocus(): void {
-  SetNuiFocus(registrationOpen || selectorOpen || spawnOpen, registrationOpen || selectorOpen || spawnOpen);
+  SetNuiFocus(registrationOpen || selectorOpen || spawnOpen || appearanceOpen, registrationOpen || selectorOpen || spawnOpen || appearanceOpen);
 }
 
 async function ensureScreenVisible(): Promise<void> {
@@ -94,7 +101,7 @@ async function ensureScreenVisible(): Promise<void> {
 }
 
 function isCharacterMenuOpen(): boolean {
-  return registrationOpen || selectorOpen || spawnOpen;
+  return registrationOpen || selectorOpen || spawnOpen || appearanceOpen;
 }
 
 function lerp(a: number, b: number, t: number): number {
@@ -223,7 +230,195 @@ async function prepareCharacterMenuScene(): Promise<void> {
   startCharacterCinematic();
 }
 
+const APPEARANCE_COMPONENT_IDS = Object.freeze({ mask: 1, arms: 3, pants: 4, bag: 5, shoes: 6, accessory: 7, undershirt: 8, armor: 9, decals: 10, torso: 11 });
+const APPEARANCE_PROP_IDS = Object.freeze({ hat: 0, glasses: 1, ears: 2, watch: 6, bracelet: 7 });
+
+function clampPedDrawable(ped: number, componentId: number, drawable: number): number {
+  const count = Math.max(1, GetNumberOfPedDrawableVariations(ped, componentId));
+  return Math.max(0, Math.min(count - 1, Math.floor(drawable)));
+}
+
+function clampPedTexture(ped: number, componentId: number, drawable: number, texture: number): number {
+  const count = Math.max(1, GetNumberOfPedTextureVariations(ped, componentId, drawable));
+  return Math.max(0, Math.min(count - 1, Math.floor(texture)));
+}
+
+function applyAppearanceToPed(ped: number, rawAppearance: CharacterAppearance): CharacterAppearance {
+  const appearance = sanitizeAppearance(rawAppearance);
+  SetPedHeadBlendData(
+    ped,
+    appearance.parents.shapeFirst,
+    appearance.parents.shapeSecond,
+    0,
+    appearance.parents.skinFirst,
+    appearance.parents.skinSecond,
+    0,
+    appearance.parents.shapeMix,
+    appearance.parents.skinMix,
+    0.0,
+    false,
+  );
+
+  for (let index = 0; index < appearance.faceFeatures.length; index++) SetPedFaceFeature(ped, index, appearance.faceFeatures[index]);
+  SetPedEyeColor(ped, appearance.eyeColor);
+
+  const hairDrawable = clampPedDrawable(ped, 2, appearance.hair.style);
+  const hairTexture = clampPedTexture(ped, 2, hairDrawable, appearance.hair.texture);
+  appearance.hair.style = hairDrawable;
+  appearance.hair.texture = hairTexture;
+  SetPedComponentVariation(ped, 2, hairDrawable, hairTexture, 0);
+  SetPedHairColor(ped, appearance.hair.color, appearance.hair.highlight);
+
+  const beardIndex = appearance.beard.style < 0 ? 255 : appearance.beard.style;
+  SetPedHeadOverlay(ped, 1, beardIndex, appearance.beard.style < 0 ? 0.0 : appearance.beard.opacity);
+  if (appearance.beard.style >= 0) SetPedHeadOverlayColor(ped, 1, 1, appearance.beard.color, appearance.beard.color);
+
+  const eyebrowIndex = appearance.eyebrows.style < 0 ? 255 : appearance.eyebrows.style;
+  SetPedHeadOverlay(ped, 2, eyebrowIndex, appearance.eyebrows.style < 0 ? 0.0 : appearance.eyebrows.opacity);
+  if (appearance.eyebrows.style >= 0) SetPedHeadOverlayColor(ped, 2, 1, appearance.eyebrows.color, appearance.eyebrows.color);
+
+  for (const [key, componentId] of Object.entries(APPEARANCE_COMPONENT_IDS) as Array<[keyof CharacterAppearance['clothes'], number]>) {
+    const item = appearance.clothes[key];
+    const drawable = clampPedDrawable(ped, componentId, item.drawable);
+    const texture = clampPedTexture(ped, componentId, drawable, item.texture);
+    item.drawable = drawable;
+    item.texture = texture;
+    SetPedComponentVariation(ped, componentId, drawable, texture, 0);
+  }
+
+  for (const [key, propId] of Object.entries(APPEARANCE_PROP_IDS) as Array<[keyof CharacterAppearance['props'], number]>) {
+    const item = appearance.props[key];
+    if (item.drawable < 0) {
+      ClearPedProp(ped, propId);
+      continue;
+    }
+    const drawableCount = Math.max(0, GetNumberOfPedPropDrawableVariations(ped, propId));
+    if (drawableCount <= 0) {
+      item.drawable = -1;
+      item.texture = 0;
+      ClearPedProp(ped, propId);
+      continue;
+    }
+    const drawable = Math.max(0, Math.min(drawableCount - 1, item.drawable));
+    const textureCount = Math.max(1, GetNumberOfPedPropTextureVariations(ped, propId, drawable));
+    const texture = Math.max(0, Math.min(textureCount - 1, item.texture));
+    item.drawable = drawable;
+    item.texture = texture;
+    SetPedPropIndex(ped, propId, drawable, texture, true);
+  }
+
+  ClearPedDecorations(ped);
+  for (const tattooId of appearance.tattoos) {
+    const tattoo = APPEARANCE_TATTOOS.find((entry) => entry.id === tattooId);
+    if (!tattoo) continue;
+    const overlay = appearance.sex === 'female' ? tattoo.female : tattoo.male;
+    if (!overlay) continue;
+    AddPedDecorationFromHashes(ped, GetHashKey(tattoo.collection), GetHashKey(overlay));
+  }
+  return appearance;
+}
+
+function getAppearanceOptions(ped: number, appearance: CharacterAppearance): Record<string, any> {
+  const components: Record<string, any> = {};
+  for (const [key, componentId] of Object.entries(APPEARANCE_COMPONENT_IDS)) {
+    const item = appearance.clothes[key as keyof CharacterAppearance['clothes']];
+    const drawables = Math.max(1, GetNumberOfPedDrawableVariations(ped, componentId));
+    const drawable = Math.max(0, Math.min(drawables - 1, item.drawable));
+    components[key] = { drawables, textures: Math.max(1, GetNumberOfPedTextureVariations(ped, componentId, drawable)) };
+  }
+  const props: Record<string, any> = {};
+  for (const [key, propId] of Object.entries(APPEARANCE_PROP_IDS)) {
+    const item = appearance.props[key as keyof CharacterAppearance['props']];
+    const drawables = Math.max(0, GetNumberOfPedPropDrawableVariations(ped, propId));
+    const drawable = Math.max(0, Math.min(Math.max(0, drawables - 1), Math.max(0, item.drawable)));
+    props[key] = { drawables, textures: drawables > 0 ? Math.max(1, GetNumberOfPedPropTextureVariations(ped, propId, drawable)) : 1 };
+  }
+  const hairDrawables = Math.max(1, GetNumberOfPedDrawableVariations(ped, 2));
+  const hairDrawable = Math.max(0, Math.min(hairDrawables - 1, appearance.hair.style));
+  return {
+    parents: 46,
+    hair: { drawables: hairDrawables, textures: Math.max(1, GetNumberOfPedTextureVariations(ped, 2, hairDrawable)), colors: 64 },
+    components,
+    props,
+  };
+}
+
+function destroyAppearanceCamera(immediate = false): void {
+  if (appearanceCamera && DoesCamExist(appearanceCamera)) {
+    SetCamActive(appearanceCamera, false);
+    RenderScriptCams(false, !immediate, immediate ? 0 : 250, true, true);
+    DestroyCam(appearanceCamera, false);
+  }
+  appearanceCamera = 0;
+}
+
+function setAppearanceCameraView(view: 'face' | 'body'): void {
+  appearanceCameraView = view;
+  const ped = PlayerPedId();
+  if (!ped || !DoesEntityExist(ped)) return;
+  const cameraConfig = view === 'body' ? ClientConfig.appearanceStudio.bodyCamera : ClientConfig.appearanceStudio.camera;
+  if (!appearanceCamera || !DoesCamExist(appearanceCamera)) {
+    appearanceCamera = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA', cameraConfig.x, cameraConfig.y, cameraConfig.z, 0, 0, 0, cameraConfig.fov, true, 2);
+    SetCamActive(appearanceCamera, true);
+    RenderScriptCams(true, true, 250, true, true);
+  } else {
+    SetCamCoord(appearanceCamera, cameraConfig.x, cameraConfig.y, cameraConfig.z);
+    SetCamFov(appearanceCamera, cameraConfig.fov);
+  }
+  PointCamAtEntity(appearanceCamera, ped, 0.0, 0.0, view === 'body' ? 0.15 : 0.67, true);
+}
+
+function closeAppearanceCreator(immediate = false): void {
+  appearanceOpen = false;
+  appearancePreviewToken++;
+  destroyAppearanceCamera(immediate);
+  SendNuiMessage(JSON.stringify({ type: 'appearance', active: false }));
+  refreshNuiFocus();
+}
+
+async function openAppearanceCreator(data: any): Promise<void> {
+  pendingSelectionPayload = data;
+  registrationOpen = false;
+  selectorOpen = false;
+  spawnOpen = false;
+  appearanceOpen = true;
+  loaded = false;
+  characterSceneToken++;
+  destroyCharacterCinematic(true);
+  ClearFocus();
+  await ensureScreenVisible();
+
+  const initial = hasSavedAppearance(data?.metadata?.appearance) ? sanitizeAppearance(data.metadata.appearance) : createDefaultAppearance('male');
+  appearanceDraft = initial;
+  currentAppearance = initial;
+  const ped = await ensureMultiplayerPlayerModel(false, initial.sex);
+  if (!ped || !DoesEntityExist(ped)) throw new Error('The creator model could not be loaded.');
+
+  const studio = ClientConfig.appearanceStudio.position;
+  RequestCollisionAtCoord(studio.x, studio.y, studio.z);
+  SetEntityCoordsNoOffset(ped, studio.x, studio.y, studio.z, false, false, false);
+  SetEntityHeading(ped, studio.heading);
+  SetEntityVisible(ped, true, false);
+  SetEntityCollision(ped, true, true);
+  SetEntityInvincible(ped, true);
+  FreezeEntityPosition(ped, true);
+  appearanceDraft = applyAppearanceToPed(ped, initial);
+  setAppearanceCameraView('face');
+  refreshNuiFocus();
+  SendNuiMessage(JSON.stringify({ type: 'registration', active: false }));
+  SendNuiMessage(JSON.stringify({ type: 'selector', active: false }));
+  SendNuiMessage(JSON.stringify({ type: 'spawn', active: false }));
+  SendNuiMessage(JSON.stringify({
+    type: 'appearance',
+    active: true,
+    appearance: appearanceDraft,
+    options: getAppearanceOptions(ped, appearanceDraft),
+    tattoos: APPEARANCE_TATTOOS.map((tattoo) => ({ id: tattoo.id, label: tattoo.label, available: Boolean(initial.sex === 'female' ? tattoo.female : tattoo.male) })),
+  }));
+}
+
 function openRegistration(profile: any = {}): void {
+  closeAppearanceCreator(true);
   registrationProfile = { ...profile };
   registrationOpen = true;
   selectorOpen = false;
@@ -252,6 +447,7 @@ function closeRegistration(): void {
 }
 
 function openSelector(data: any): void {
+  closeAppearanceCreator(true);
   registrationOpen = false;
   spawnOpen = false;
   selectorOpen = true;
@@ -270,6 +466,7 @@ function closeSelector(): void {
 }
 
 function openSpawn(data: any): void {
+  closeAppearanceCreator(true);
   const spawns = Array.isArray(data?.spawns) ? data.spawns : [];
   availableSpawns = new Map<string, Position>();
   for (const spawn of spawns) {
@@ -300,8 +497,9 @@ function closeSpawn(): void {
   refreshNuiFocus();
 }
 
-async function ensureMultiplayerPlayerModel(force = false): Promise<number> {
-  const model = GetHashKey(ClientConfig.defaultPlayerModel);
+async function ensureMultiplayerPlayerModel(force = false, sex: AppearanceSex = 'male'): Promise<number> {
+  const modelName = sex === 'female' ? ClientConfig.femalePlayerModel : ClientConfig.defaultPlayerModel;
+  const model = GetHashKey(modelName);
   const currentPed = await waitForPlayerPed();
   if (!force && DoesEntityExist(currentPed) && GetEntityModel(currentPed) === model) return currentPed;
   if (!IsModelInCdimage(model)) throw new Error(`Invalid multiplayer model: ${ClientConfig.defaultPlayerModel}`);
@@ -329,12 +527,14 @@ async function spawnCharacter(data: PlayerData, position?: Position, spawnId = '
   closeRegistration();
   closeSelector();
   closeSpawn();
+  closeAppearanceCreator(true);
   characterSceneToken++;
   destroyCharacterCinematic();
   loaded = false;
   await ensureScreenVisible();
 
-  const ped = await ensureMultiplayerPlayerModel();
+  const appearance = currentAppearance ? sanitizeAppearance(currentAppearance) : createDefaultAppearance('male');
+  const ped = await ensureMultiplayerPlayerModel(false, appearance.sex);
   if (!DoesEntityExist(ped)) throw new Error('Player ped does not exist.');
   const p = position ?? data.character.position;
   const values = [p.x, p.y, p.z, p.heading];
@@ -343,6 +543,7 @@ async function spawnCharacter(data: PlayerData, position?: Position, spawnId = '
   RequestCollisionAtCoord(p.x, p.y, p.z);
   SetFocusPosAndVel(p.x, p.y, p.z, 0, 0, 0);
   NetworkResurrectLocalPlayer(p.x, p.y, p.z, p.heading, true, false);
+  applyAppearanceToPed(ped, appearance);
   SetEntityCoordsNoOffset(ped, p.x, p.y, p.z, false, false, false);
   SetEntityHeading(ped, p.heading);
   ResetEntityAlpha(ped);
@@ -386,6 +587,7 @@ onNet('rumble:player:loadError', (text: string) => {
   registrationOpen = false;
   selectorOpen = false;
   spawnOpen = false;
+  closeAppearanceCreator(true);
   characterSceneToken++;
   destroyCharacterCinematic(true);
   ClearFocus();
@@ -453,6 +655,63 @@ on('__cfx_nui:characterNew', (_data: any, callback: (response: any) => void) => 
   callback({ accepted: true });
 });
 
+RegisterNuiCallbackType('appearancePreview');
+on('__cfx_nui:appearancePreview', (data: any, callback: (response: any) => void) => {
+  if (!appearanceOpen) {
+    callback({ accepted: false });
+    return;
+  }
+  const next = sanitizeAppearance(data?.appearance);
+  const token = ++appearancePreviewToken;
+  callback({ accepted: true });
+  void (async () => {
+    const ped = await ensureMultiplayerPlayerModel(false, next.sex);
+    if (!appearanceOpen || token !== appearancePreviewToken) return;
+    const studio = ClientConfig.appearanceStudio.position;
+    SetEntityCoordsNoOffset(ped, studio.x, studio.y, studio.z, false, false, false);
+    SetEntityHeading(ped, studio.heading);
+    SetEntityInvincible(ped, true);
+    FreezeEntityPosition(ped, true);
+    appearanceDraft = applyAppearanceToPed(ped, next);
+    currentAppearance = appearanceDraft;
+    setAppearanceCameraView(appearanceCameraView);
+    SendNuiMessage(JSON.stringify({
+      type: 'appearanceOptions',
+      options: getAppearanceOptions(ped, appearanceDraft),
+      appearance: appearanceDraft,
+      tattoos: APPEARANCE_TATTOOS.map((tattoo) => ({ id: tattoo.id, label: tattoo.label, available: Boolean(appearanceDraft!.sex === 'female' ? tattoo.female : tattoo.male) })),
+    }));
+  })().catch((error) => console.error('[RUMBLE][APPEARANCE] preview failed', error));
+});
+
+RegisterNuiCallbackType('appearanceSave');
+on('__cfx_nui:appearanceSave', (data: any, callback: (response: any) => void) => {
+  if (!appearanceOpen || !playerData) {
+    callback({ accepted: false });
+    return;
+  }
+  const appearance = sanitizeAppearance(data?.appearance ?? appearanceDraft);
+  appearanceDraft = appearance;
+  emitNet('rumble:character:appearanceSave', appearance);
+  callback({ accepted: true });
+});
+
+RegisterNuiCallbackType('appearanceCamera');
+on('__cfx_nui:appearanceCamera', (data: any, callback: (response: any) => void) => {
+  if (!appearanceOpen) {
+    callback({ accepted: false });
+    return;
+  }
+  const ped = PlayerPedId();
+  const action = String(data?.action ?? '');
+  if (action === 'face' || action === 'body') setAppearanceCameraView(action);
+  if ((action === 'left' || action === 'right') && ped && DoesEntityExist(ped)) {
+    const delta = action === 'left' ? -15.0 : 15.0;
+    SetEntityHeading(ped, GetEntityHeading(ped) + delta);
+  }
+  callback({ accepted: true });
+});
+
 RegisterNuiCallbackType('spawnSelect');
 on('__cfx_nui:spawnSelect', (data: any, callback: (response: any) => void) => {
   if (!spawnOpen || !playerData) {
@@ -489,14 +748,42 @@ onNet('rumble:character:selected', (data: any) => {
   playerData = data?.player ?? null;
   inventoryState = Array.isArray(data?.inventory) ? data.inventory : [];
   deathState = String(data?.metadata?.deathState ?? 'alive') as any;
+  pendingSelectionPayload = data;
   if (!playerData) return;
 
-  void ensureMultiplayerPlayerModel().then(() => {
+  const savedAppearance = hasSavedAppearance(data?.metadata?.appearance) ? sanitizeAppearance(data.metadata.appearance) : null;
+  currentAppearance = savedAppearance;
+  appearanceDraft = savedAppearance;
+
+  if (Boolean(data?.requiresAppearance) || !savedAppearance) {
+    void openAppearanceCreator(data).catch((error) => {
+      console.error('[RUMBLE][APPEARANCE] failed to open creator', error);
+      chat('Character creator failed to open. Check F8.', 'error');
+    });
+    return;
+  }
+
+  void ensureMultiplayerPlayerModel(false, savedAppearance.sex).then((ped) => {
+    applyAppearanceToPed(ped, savedAppearance);
     openSpawn(data);
   }).catch((error) => {
     console.error('[RUMBLE][CLIENT][MODEL] Failed to prepare multiplayer ped', error);
-    chat('Could not prepare the multiplayer character. Check the F8 console.', 'error');
+    chat('Could not prepare the multiplayer character. Check F8.', 'error');
   });
+});
+
+onNet('rumble:character:appearanceSaved', (data: any) => {
+  if (!playerData) return;
+  const appearance = sanitizeAppearance(data?.appearance ?? appearanceDraft);
+  currentAppearance = appearance;
+  appearanceDraft = appearance;
+  const payload = data?.selection ?? pendingSelectionPayload;
+  closeAppearanceCreator(true);
+  if (payload) openSpawn(payload);
+});
+
+onNet('rumble:character:appearanceError', (text: string) => {
+  SendNuiMessage(JSON.stringify({ type: 'appearanceError', message: String(text || 'Could not save the appearance.') }));
 });
 
 onNet('rumble:player:loaded', (data: PlayerData) => {
@@ -1064,6 +1351,7 @@ on('onClientResourceStart', (resourceName: string) => {
     emit('chat:addSuggestion', '/spectate', 'Spectate a player or turn spectate off.', [{ name: 'id/off', help: 'Permanent ID or off' }]);
     emit('chat:addSuggestion', '/entity', 'Inspect the entity in front of the camera.');
     emit('chat:addSuggestion', '/vehinfo', 'Show information about the current vehicle.');
+    emit('chat:addSuggestion', '/creator', 'Open the character creator (admin).');
     emit('chat:addSuggestion', '/healthcheck', 'Run the core health check.');
     emit('chat:addSuggestion', '/id', "Show the permanent player ID and the character's State ID.");
     emit('chat:addSuggestion', '/money', 'Show cash and card balance.');
@@ -1120,6 +1408,7 @@ on('onClientResourceStop', (resourceName: string) => {
   closeRegistration();
   closeSelector();
   closeSpawn();
+  closeAppearanceCreator(true);
   for (const pending of rpcPending.values()) {
     clearTimeout(pending.timer);
     pending.reject(new Error('Rumble resource stopped.'));

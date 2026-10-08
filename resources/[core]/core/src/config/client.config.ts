@@ -1,6 +1,12 @@
 const ClientConfig = Object.freeze({
   spawnCollisionTimeoutMs: 4000,
   defaultPlayerModel: 'mp_m_freemode_01',
+  femalePlayerModel: 'mp_f_freemode_01',
+  appearanceStudio: Object.freeze({
+    position: Object.freeze({ x: 402.92, y: -996.78, z: -99.00, heading: 180.0 }),
+    camera: Object.freeze({ x: 402.92, y: -998.55, z: -98.45, fov: 38.0 }),
+    bodyCamera: Object.freeze({ x: 402.92, y: -999.20, z: -98.80, fov: 52.0 }),
+  }),
   modelLoadTimeoutMs: 10000,
   characterCinematic: Object.freeze({
     fov: 48.0,
